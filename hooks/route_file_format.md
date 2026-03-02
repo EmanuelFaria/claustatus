@@ -65,11 +65,15 @@ The `SESSION_ID` is available in the hook's JSON input as `.session_id`.
   "timestamp": 1234567890,
   "action": "loaded",
   "count": 3,
-  "categories": "keyword,tool"
+  "categories": "keyword,tool",
+  "title": "Use stat -c %Y not stat -f %m on macOS with GNU coreutils"
 }
 ```
 
-`action` values: `"loaded"` (green, shows count), `"skipped"` (amber)
+`action` values: `"loaded"` (green, shows title or count), `"skipped"` (amber)
+
+- `title`: optional — the title of the first/most relevant learning surfaced. If present, displayed directly in the statusline instead of "surfaced N past learnings". Truncated at 45 chars with `...`.
+- Multiple learnings: displayed as `"first title" +N` where N is the additional count.
 
 ## Example Hook Integration
 

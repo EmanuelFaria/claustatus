@@ -218,6 +218,8 @@ Claude Code calls the statusline script on every API response, piping a JSON blo
 
 See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the full data flow diagram.
 
+If you want to modify the script, [`docs/HACKING.md`](docs/HACKING.md) explains the non-obvious decisions: why the field separator is `\x1f` instead of tab, why there's no `set -e`, what `BASE_OVERHEAD` is, and how to add a new row.
+
 ## Contributing
 
 PRs welcome! Areas that would benefit from community input:

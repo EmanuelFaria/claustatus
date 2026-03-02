@@ -18,7 +18,7 @@ ID     3e6c5d9c-1014-4a3c-9fc6-9618e0756e88
 GUIDE  master_debugging.md ('api_failure')
 SKILL  8 options
 INTENT web_search → perplexity-sonar
-LEARN  surfaced 1 past learning
+LEARN  "Use stat -c %Y not stat -f %m on macOS with GNU coreutils"
 ```
 
 Plus conditional alerts:
@@ -123,18 +123,69 @@ In **Settings > Profiles**, for each profile:
 
 ## The GUIDE / SKILL / INTENT / LEARN Rows
 
-These four rows show real-time decisions made by Claude Code hook scripts:
+These four rows show real-time decisions made by Claude Code hook scripts. They're all **optional** — rows show `none` (gray) when no route file exists for the current session.
 
-| Row | Shows | Powered by |
-|-----|-------|-----------|
-| **GUIDE** | Which guidance file was injected this prompt | `UserPromptSubmit` hook that writes `.guidance_route_{SID}.json` |
-| **SKILL** | Which skill was routed | `UserPromptSubmit` hook that writes `.skill_route_{SID}.json` |
-| **INTENT** | Detected task type → tool target | `UserPromptSubmit` hook that writes `.intent_route_{SID}.json` |
-| **LEARN** | Past learnings surfaced from DB | `UserPromptSubmit` hook that writes `.learn_route_{SID}.json` |
+### GUIDE — Guidance injection
 
-These rows are **optional** — if the route files don't exist, the rows show `none`. To populate them, your `UserPromptSubmit` hook needs to write JSON to `~/.claude/temp/.{guide|skill|intent|learn}_route_{SESSION_ID}.json`.
+Shows which guidance/documentation file was automatically loaded into Claude's context for this prompt.
 
-See [`hooks/route_file_format.md`](hooks/route_file_format.md) for the JSON format and how to integrate this into your own hooks.
+| State | Color | Example |
+|-------|-------|---------|
+| File loaded | 🟢 Green | `master_debugging.md ('api_failure')` |
+| Cooldown (already loaded today) | 🟡 Amber | `cooldown` |
+| No match | ⬜ Gray | `none` |
+
+Source: your `UserPromptSubmit` hook writes `.guidance_route_{SID}.json` when it keyword-matches a prompt and injects a guidance file.
+
+### SKILL — Skill routing
+
+Shows which Claude Code skill was matched, or how many skill options were offered.
+
+| State | Color | Example |
+|-------|-------|---------|
+| Specific skill loaded | 🟢 Green | `csv-protocol` |
+| Multiple skills matched, options offered | 🔵 Blue | `4 options` |
+| User declined the options | 🟡 Amber | `declined` |
+| No match | ⬜ Gray | `none` |
+
+Source: your `UserPromptSubmit` hook writes `.skill_route_{SID}.json` based on prompt pattern matching.
+
+### INTENT — Capability routing
+
+Detects what type of task you're asking for and which tool it was routed to. Useful for seeing whether your hooks are correctly identifying task types.
+
+| Prompt contains... | INTENT shows |
+|---|---|
+| "search for", "find online", "look up" | `web_search → perplexity-sonar` |
+| "review this code", "check for bugs" | `code_review → thinking` |
+| "extract from", "parse this", "get the value" | `extraction → claude-thinking` |
+| "think through", "analyze deeply", "reason about" | `reasoning → thinking` |
+| "create hook", "can Claude do X" | `hook_creation ⚠️` |
+| No pattern matched | `none` |
+
+| State | Color | Example |
+|-------|-------|---------|
+| Task type matched | 🔵 Blue | `web_search → perplexity-sonar` |
+| No match | ⬜ Gray | `none` |
+
+Source: your `UserPromptSubmit` hook writes `.intent_route_{SID}.json`. Detection patterns live in `~/.claude/routing/capability_router.json`.
+
+### LEARN — Past learnings surfaced
+
+Shows the title of the most relevant past learning that was surfaced from your knowledge base for this prompt.
+
+| State | Color | Example |
+|-------|-------|---------|
+| Learning(s) found | 🟢 Green | `"Use stat -c %Y not stat -f %m on macOS"` |
+| Multiple learnings | 🟢 Green | `"bash IFS tab collapses empty fields" +2` |
+| Skipped (throttled) | 🟡 Amber | `skipped` |
+| No match | ⬜ Gray | `none` |
+
+Source: your `UserPromptSubmit` hook queries a database of past learnings by keyword-matching the prompt, writes `.learn_route_{SID}.json` with the first matching learning's title and count.
+
+---
+
+To populate any of these rows, your `UserPromptSubmit` hook writes JSON to `~/.claude/temp/.{guide|skill|intent|learn}_route_{SESSION_ID}.json`. See [`hooks/route_file_format.md`](hooks/route_file_format.md) for the exact JSON schema and example hook code.
 
 ## PRECOMPACT Alerts
 

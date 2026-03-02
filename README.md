@@ -1,4 +1,4 @@
-# Claude Code Powerline Statusline
+# claustatus
 
 A rich, real-time powerline-style status bar for [Claude Code](https://claude.ai/code) — built entirely in Bash and Python, running inside your terminal.
 
@@ -48,8 +48,8 @@ Plus conditional alerts:
 
 ```bash
 # Clone this repo
-git clone https://github.com/EmanuelFaria/claude-code-powerline-statusline.git
-cd claude-code-powerline-statusline
+git clone https://github.com/EmanuelFaria/claustatus.git
+cd claustatus
 
 # Run the installer
 bash install.sh

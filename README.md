@@ -17,7 +17,7 @@ NAME   statusline fix   REPO  PersonalOS-session-20260228-121307
 CLONE  PersonalOS-session-20260228-121307
 ID     3e6c5d9c-1014-4a3c-9fc6-9618e0756e88
 GUIDE  master_debugging.md ('api_failure')
-SKILL  fix-everything, personalos-audit +6  ← first 2 skills + overflow count
+SKILL  maintenance (8)
 LEARN  "rebase before push"
 ```
 
@@ -30,11 +30,11 @@ Plus conditional alerts:
 
 - **Real-time context tracking** — tokens used, percentage remaining, cost, API duration
 - **Model awareness** — shows model name, version, thinking on/off state
-- **Session identity** — session name, clone directory, UUID
-- **Agent activity** — AGENT row shows background subagent description and elapsed time so you know Claude isn't frozen
+- **Session identity** — session name (from `/rename`), clone directory, UUID
+- **Agent activity** — AGENT row shows background subagent description and elapsed time
 - **Progressive disclosure rows** — GUIDE, SKILL, INTENT, LEARN show what your hook system is doing (hidden when inactive)
 - **Content wrapping** — rows with long content wrap at 42 chars instead of truncating
-- **iTerm2 integration** — tab title, window title, and badge update automatically per-session
+- **iTerm2 integration** — tab title, window title, badge, and Session Name update automatically per-session
 - **Multi-session safe** — each session gets its own route files, no cross-contamination
 - **Fast** — single `jq` call, pure bash computation, ~40ms execution
 
@@ -45,7 +45,7 @@ Plus conditional alerts:
 - [Homebrew](https://brew.sh) bash: `brew install bash`
 - `jq`: `brew install jq`
 - A [Nerd Font](https://www.nerdfonts.com/) for the powerline arrows (optional but recommended)
-- **iTerm2 integration**: iTerm2 + Python 3.10+ (for tab/window/badge sync)
+- **iTerm2 integration**: iTerm2 only (for tab/window/badge sync)
 
 ## Quick Install
 
@@ -81,12 +81,12 @@ Add to `~/.claude/settings.json`:
 {
   "statusLine": {
     "type": "command",
-    "command": "/path/to/your/statusline.sh"
+    "command": "/Users/YOUR_USERNAME/.claude/scripts/statusline.sh"
   }
 }
 ```
 
-Use your actual path — usually `~/.claude/scripts/statusline.sh` but note `~` doesn't expand in JSON, use the full path.
+Note: use the full absolute path — `~` does not expand in JSON.
 
 ### 3. Test it
 
@@ -96,33 +96,85 @@ echo '{"model":{"display_name":"Test"},"version":"1.0","context_window":{"contex
 
 ## iTerm2 Tab/Window/Badge Sync (Optional)
 
-If you use iTerm2, the `statusline_title_sync.py` script syncs session data to:
-- **Tab title** → clone directory name
-- **Window title** → session UUID
-- **Badge** → session name (from `/rename`)
+If you use iTerm2, `statusline_title_sync.py` syncs Claude session data to your terminal window in real time:
 
-### Setup
+| iTerm2 Field | Value | How to see it |
+|---|---|---|
+| **Tab title** | Clone directory name (repo/worktree) | Tab bar |
+| **Window title** | Session name from `/rename` | Title bar |
+| **Badge** | Session name from `/rename` | Badge overlay on terminal |
+| **Session Name** | Claude session UUID | Edit Current Session panel |
+
+### Install the Sync Script
 
 ```bash
-# Copy to iTerm2 AutoLaunch
-mkdir -p ~/.config/iterm2/AppSupport/Scripts/AutoLaunch
-cp statusline_title_sync.py ~/.config/iterm2/AppSupport/Scripts/AutoLaunch/
+# Create the AutoLaunch directory if needed
+mkdir -p ~/Library/Application\ Support/iTerm2/Scripts/AutoLaunch
 
-# Install dependencies
-pip3 install iterm2
+# Copy the script
+cp statusline_title_sync.py ~/Library/Application\ Support/iTerm2/Scripts/AutoLaunch/
 ```
 
-Then restart iTerm2 or go to **Scripts > AutoLaunch > statusline_title_sync.py**.
+### Launch It
+
+**Do NOT run it from a terminal shell.** The script requires iTerm2's own Python environment and the `ITERM2_COOKIE` environment variable that only iTerm2 sets. Running it from a shell will get HTTP 401 errors.
+
+Launch it from within iTerm2:
+
+1. Open iTerm2 menu bar → **Scripts** → **AutoLaunch** → **statusline_title_sync.py**
+
+Or restart iTerm2 entirely — AutoLaunch scripts run automatically on startup.
+
+### After You Launch It
+
+Check it's running:
+
+```bash
+cat ~/Library/Application\ Support/iTerm2/Scripts/AutoLaunch/../../../ScriptHistory/statusline_title_sync.py/status
+```
+
+Or check the log:
+
+```bash
+tail -f ~/.claude/temp/.iterm_sync_script.log
+```
+
+### If You Kill It
+
+**Important:** If you kill the script with `pkill` or close its window, iTerm2 does NOT auto-restart it. You must restart it manually via the Scripts > AutoLaunch menu or restart iTerm2.
 
 ### iTerm2 Profile Settings
 
-In **Settings > Profiles**, for each profile:
+Configure each profile you use with Claude Code.
 
-1. **General tab** → check **"Applications in terminal may change the title"**
-2. **Window tab** → set:
-   - **Custom Tab Title**: `\(user.cloneName)`
-   - **Custom Window Title**: `\(user.sessionId)`
-3. **General tab → Badge**: `\(user.sessionBadge)`
+**Via the iTerm2 UI** (Settings → Profiles):
+
+| Tab | Field | Value |
+|---|---|---|
+| General | Applications in terminal may change the title | ✅ checked |
+| General | Badge | `\(user.sessionBadge)` |
+| Window | Custom Tab Title | `\(user.cloneName)` |
+| Window | Custom Window Title | `\(user.sessionBadge)` |
+| Text | Blinking text allowed | ✅ checked (for PRECOMPACT alerts) |
+
+**Via Dynamic Profiles** (`~/Library/Application Support/iTerm2/DynamicProfiles/yourprofile.json`):
+
+```json
+{
+  "Name": "Your Profile Name",
+  "Guid": "your-unique-guid",
+  "Allow Title Setting": true,
+  "Custom Tab Title": "\\(user.cloneName)",
+  "Custom Window Title": "\\(user.sessionBadge)",
+  "Badge Text": "\\(user.sessionBadge)"
+}
+```
+
+Note the double backslash (`\\`) in JSON — it renders as a single `\` which iTerm2 interprets as its variable interpolation syntax.
+
+The `statusline_title_sync.py` script also automatically applies the badge template (`\(user.sessionBadge)`) to all your profiles on startup, bypassing profile plists that iTerm2 ignores after launch.
+
+---
 
 ## The GUIDE / SKILL / INTENT / LEARN Rows
 
@@ -142,12 +194,12 @@ Source: your `UserPromptSubmit` hook writes `.guidance_route_{SID}.json` when it
 
 ### SKILL — Skill routing
 
-Shows which Claude Code skill was matched, or how many skill options were offered.
+Shows which Claude Code skill was matched, or how many skill options were offered, plus the skill category.
 
 | State | Color | Example |
 |-------|-------|---------|
 | Specific skill loaded | 🟢 Green | `csv-protocol` |
-| Multiple skills matched, options offered | 🔵 Blue | `4 options` |
+| Multiple skills matched, options offered | 🔵 Blue | `maintenance (8)` |
 | User declined the options | 🟡 Amber | `declined` |
 | No match | ⬜ Gray | `none` |
 
@@ -155,14 +207,14 @@ Source: your `UserPromptSubmit` hook writes `.skill_route_{SID}.json` based on p
 
 ### INTENT — Capability routing
 
-Detects what type of task you're asking for and which tool it was routed to. Useful for seeing whether your hooks are correctly identifying task types.
+Detects what type of task you're asking for and which tool it was routed to.
 
 | Prompt contains... | INTENT shows |
 |---|---|
 | "search for", "find online", "look up" | `web_search → perplexity-sonar` |
 | "review this code", "check for bugs" | `code_review → thinking` |
-| "extract from", "parse this", "get the value" | `extraction → claude-thinking` |
-| "think through", "analyze deeply", "reason about" | `reasoning → thinking` |
+| "extract from", "parse this" | `extraction → claude-thinking` |
+| "think through", "analyze deeply" | `reasoning → thinking` |
 | "create hook", "can Claude do X" | `hook_creation ⚠️` |
 | No pattern matched | `none` |
 
@@ -175,16 +227,16 @@ Source: your `UserPromptSubmit` hook writes `.intent_route_{SID}.json`. Detectio
 
 ### LEARN — Past learnings surfaced
 
-Shows the title of the most relevant past learning that was surfaced from your knowledge base for this prompt.
+Shows the short label of the most relevant past learning that was surfaced from your knowledge base for this prompt.
 
 | State | Color | Example |
 |-------|-------|---------|
-| Learning(s) found | 🟢 Green | `"Use stat -c %Y not stat -f %m on macOS"` |
-| Multiple learnings | 🟢 Green | `"bash IFS tab collapses empty fields" +2` |
+| Learning(s) found | 🟢 Green | `"rebase before push"` |
+| Multiple learnings | 🟢 Green | `"bash IFS tab collapses" +2` |
 | Skipped (throttled) | 🟡 Amber | `skipped` |
 | No match | ⬜ Gray | `none` |
 
-Source: your `UserPromptSubmit` hook queries a database of past learnings by keyword-matching the prompt, writes `.learn_route_{SID}.json` with the first matching learning's title and count.
+Source: your `UserPromptSubmit` hook queries a database of past learnings by keyword, writes `.learn_route_{SID}.json` with the best match's title (ideally a short ≤3-word label) and count.
 
 ---
 
@@ -195,7 +247,7 @@ To populate any of these rows, your `UserPromptSubmit` hook writes JSON to `~/.c
 The statusline shows conditional double-height alerts:
 
 - **🚨 PRECOMPACT NOW!** — appears when context is ≤20% remaining. Animated red/yellow with ANSI blink (requires iTerm2 **Settings > Profiles > Text > "Blinking text allowed"**)
-- **🔔 PASTE PRECOMPACT NOW** — appears when `~/.claude/temp/.precompact_ready` exists and is <5 minutes old. This file is written by the `/precompact` command after it generates a compact summary ready to paste.
+- **🔔 PASTE PRECOMPACT NOW** — appears when `~/.claude/temp/.precompact_ready` exists and is <5 minutes old.
 
 If you use a `/precompact` script, touch this file when your output is ready:
 ```bash
@@ -204,10 +256,11 @@ touch ~/.claude/temp/.precompact_ready
 
 ## Known Limitations
 
-- **macOS only** in current form (uses BSD `stat`, macOS paths). Linux port would need minor changes.
+- **macOS only** in current form (uses BSD `stat`, macOS paths). Linux port needs minor changes.
 - **iTerm2 only** for tab/window/badge sync. PRs welcome for other terminals.
-- The `/model` switch in Claude Code resets some data between renders — statusline handles this gracefully now (no more cross-session crashes).
-- **Blink animation** requires iTerm2's "Blinking text allowed" setting — most terminals support `\033[5m` but some disable it by default.
+- The `/model` switch in Claude Code resets some data between renders — handled gracefully.
+- **Blink animation** requires iTerm2's "Blinking text allowed" setting.
+- `statusline_title_sync.py` must be launched from the Scripts menu — not from a terminal shell.
 
 ## How It Works
 
@@ -217,7 +270,7 @@ Claude Code calls the statusline script on every API response, piping a JSON blo
 2. **Pure bash computation** — token math, percentages, string formatting
 3. **Route file reads** — session-specific JSON files written by hooks
 4. **Printf output** — all rows using 16-color ANSI codes (compatible with iTerm2's TUI)
-5. **Background iTerm2 sync** — writes OSC sequences to parent TTY for tab/badge updates
+5. **Background iTerm2 sync** — writes OSC sequences to parent TTY for tab/badge updates; Python script polls every 5s for window title, badge, and Session Name
 
 See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the full data flow diagram.
 
@@ -225,15 +278,15 @@ If you want to modify the script, [`docs/HACKING.md`](docs/HACKING.md) explains 
 
 ## Contributing
 
-PRs welcome! Areas that would benefit from community input:
+PRs welcome! See [CONTRIBUTING.md](CONTRIBUTING.md) for details.
+
+Areas that would benefit from community input:
 
 - **Linux support** — mainly the `stat` command and path conventions
 - **Other terminal emulators** — Ghostty, WezTerm, Kitty equivalents for tab/badge sync
 - **More rows** — what other Claude Code data would be useful to surface?
 - **Windows/WSL** — no idea if this works there, would love to know
-- **Hook templates** — starter hooks that write the route files for common use cases (e.g. surfacing guidance from a notes folder)
-
-Please open an issue before a large PR so we can discuss direction.
+- **Hook templates** — starter hooks that write the route files (e.g. surfacing guidance from a notes folder)
 
 ## License
 

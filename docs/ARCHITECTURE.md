@@ -32,9 +32,10 @@ iTerm2 (statusline_title_sync.py — runs every 5s)
         ├── Matches iTerm2 sessions to Claude sessions via iterm_session_id
         │
         └── Sets via Python API:
-            ├── tab.async_set_title(clone_name)
-            ├── window.async_set_title(session_uuid)
-            └── session.async_set_variable("user.sessionBadge", name)
+            ├── tab.async_set_title(clone_name)       — repo/worktree directory
+            ├── window.async_set_title(session_name)  — /rename name (NOT uuid)
+            ├── session.async_set_variable("user.sessionBadge", session_name)
+            └── session.async_set_name(claude_uuid)   — Session Name field = UUID
 ```
 
 ## Key Design Decisions

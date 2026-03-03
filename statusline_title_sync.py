@@ -4,9 +4,9 @@ statusline_title_sync.py — iTerm2 AutoLaunch Script
 
 Syncs Claude Code session data to iTerm2 session properties:
   - Tab title    → CLONE (repo/worktree basename)
-  - Window title → ID (Claude session UUID)
+  - Window title → NAME (session name from /rename)
   - Badge        → NAME (session name from /rename)
-  - Session Name → resume command (cd ... && claude --resume ...)
+  - Session Name → ID (Claude session UUID)
 
 Data source: ~/.claude/temp/.iterm_sync_<session_id>.json (per-session)
 
@@ -216,7 +216,6 @@ async def apply_session_data(
 ) -> None:
     """Apply all Claude session data to an iTerm2 session."""
     iterm_sid = session.session_id
-    resume_cmd = sync_data.get("resume_cmd", "")
     session_name = sync_data.get("session_name", "")
     claude_sid = sync_data.get("session_id", "")
 
@@ -229,12 +228,12 @@ async def apply_session_data(
         except Exception as e:
             log(f"  Error setting user.sessionId: {e}")
 
-    # Set Session Name = resume command
-    if resume_cmd and (force or current.get("name") != resume_cmd):
+    # Set Session Name = UUID (visible in Edit Current Session panel)
+    if claude_sid and (force or current.get("name") != claude_sid):
         try:
-            await session.async_set_name(resume_cmd)
-            current["name"] = resume_cmd
-            log(f"  Set name on {iterm_sid[:8]}: {resume_cmd[:50]}...")
+            await session.async_set_name(claude_sid)
+            current["name"] = claude_sid
+            log(f"  Set name on {iterm_sid[:8]}: {claude_sid}")
         except Exception as e:
             log(f"  Error setting name on {iterm_sid[:8]}: {e}")
 
@@ -258,15 +257,15 @@ async def apply_session_data(
 async def apply_titles(_session, tab, window, sync_data: dict) -> None:
     """Re-apply tab and window titles from sync data."""
     repo_name = sync_data.get("repo_name", "")
-    claude_sid = sync_data.get("session_id", "")
+    session_name = sync_data.get("session_name", "")
     if repo_name and repo_name != "--":
         try:
             await tab.async_set_title(repo_name)
         except Exception:
             pass
-    if claude_sid:
+    if session_name:
         try:
-            await window.async_set_title(claude_sid)
+            await window.async_set_title(session_name)
         except Exception:
             pass
 
@@ -318,16 +317,12 @@ async def main(connection):
                             log(f"  Re-applied to {changed_iterm_sid[:8]}")
                             return
 
-                        # Fallback: shared cache for titles only
-                        repo_name, cached_sid = read_cached_titles()
+                        # Fallback: shared cache for tab title only
+                        # (window title needs session_name which isn't in the shared cache)
+                        repo_name, _ = read_cached_titles()
                         if repo_name:
                             try:
                                 await tab.async_set_title(repo_name)
-                            except Exception:
-                                pass
-                        if cached_sid:
-                            try:
-                                await window.async_set_title(cached_sid)
                             except Exception:
                                 pass
                         return

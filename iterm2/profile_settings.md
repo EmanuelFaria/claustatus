@@ -12,7 +12,7 @@ In **Settings > Profiles**, for each profile you use with Claude Code:
 
 ### Window tab
 - **Custom Tab Title**: `\(user.cloneName)`
-- **Custom Window Title**: `\(user.sessionId)`
+- **Custom Window Title**: `\(user.sessionBadge)`
 
 ### Text tab
 - ✅ **"Blinking text allowed"** — required for the PRECOMPACT NOW animated alerts
@@ -28,7 +28,7 @@ If you use iTerm2 Dynamic Profiles, add these keys to your profile JSON in
   "Guid": "your-unique-guid-here",
   "Allow Title Setting": true,
   "Custom Tab Title": "\\(user.cloneName)",
-  "Custom Window Title": "\\(user.sessionId)",
+  "Custom Window Title": "\\(user.sessionBadge)",
   "Badge Text": "\\(user.sessionBadge)"
 }
 ```
@@ -44,7 +44,8 @@ three user variables per session via the iTerm2 Python API:
 | Variable | Value | Source |
 |----------|-------|--------|
 | `user.cloneName` | Directory name of the Claude session clone | `~/.claude/temp/.iterm_sync_{SID}.json` |
-| `user.sessionId` | Claude session UUID | Same sync file |
 | `user.sessionBadge` | Session name (set via `/rename` in Claude Code) | Same sync file |
+
+The script also sets the iTerm2 **Session Name** field to the Claude session UUID via `session.async_set_name()` — visible in Edit Current Session (⌘I).
 
 These get updated every 5 seconds by the sync script, and immediately on profile changes.

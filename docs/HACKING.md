@@ -129,3 +129,48 @@ would otherwise clear user-set titles.
    - Printf row in the output section
 4. Write a hook that creates the route file
 5. Update `hooks/route_file_format.md` with the new schema
+
+## Content Wrapping (print_row)
+
+Long content is wrapped automatically at 42 characters (matching MODEL row width):
+
+```bash
+print_row "$BG_COLOR" "$FG_COLOR" "LABEL" "$content"
+```
+
+- Content ≤ 42 chars: single line
+- Content > 42 chars: wraps at last word boundary before 42, continuation on second line
+
+GUIDE, SKILL, INTENT, LEARN, and AGENT all use `print_row`. Fixed-layout rows (MODEL, CTX, CC%, SES) do not — they have fixed-width multi-segment designs.
+
+## AGENT Row
+
+The AGENT row appears between MODEL and CTX only when a background agent/subagent is active:
+
+```
+AGENT  Read codebase for architecture...  2m 14s
+```
+
+**Data source:** `~/.claude/temp/.agent_activity_{SID}.json`
+
+**Populated by:** `agent_activity_tracker.sh` (PreToolUse hook, matcher: `tools:Agent,Task`)
+
+**Cleared by:** same hook on PostToolUse
+
+**JSON format:**
+```json
+{"status":"running","description":"task description","started":1234567890,"tool":"Agent"}
+```
+
+Elapsed time is calculated fresh on each render — the incrementing timer signals Claude isn't frozen during long agent calls.
+
+## Conditional Rows
+
+These rows only appear when active (hidden entirely when "none"):
+
+| Row | Shows when |
+|-----|-----------|
+| AGENT | Agent/Task tool is running |
+| SKILL | Skill loaded, offered, or declined |
+| INTENT | Capability routing matched |
+| NAME | Session has been renamed via `/rename` |

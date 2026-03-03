@@ -103,8 +103,7 @@ else
     REPO_NAME="--"
 fi
 
-# Git remote repo name — use 5-second cache to avoid slow git calls
-GIT_CACHE="/tmp/statusline-git-cache-$$"
+# Git remote repo name — use 30-second cache to avoid slow git calls
 GITHUB_REPO_NAME="$REPO_NAME"
 if [ -n "$PROJECT_DIR" ]; then
     GLOBAL_GIT_CACHE="/tmp/statusline-git-${PROJECT_DIR//\//_}"
@@ -187,15 +186,17 @@ else
     THINK="🧠 OFF"; THINK_BG="$BG_RED"; THINK_FG_NEXT="$FG_RED"
 fi
 
-# Session name — use cached value (updated by full script periodically)
+# Session name — always read from transcript so /rename is reflected immediately
+# Cache is only used as fallback when transcript is unavailable
 SESSION_NAME=""
 SESSION_NAME_CACHE="/tmp/statusline-sessname-${SESSION_ID}"
-if [ -f "$SESSION_NAME_CACHE" ]; then
-    SESSION_NAME=$(cat "$SESSION_NAME_CACHE")
-elif [ -n "$TRANSCRIPT_PATH" ] && [ -f "$TRANSCRIPT_PATH" ]; then
+if [ -n "$TRANSCRIPT_PATH" ] && [ -f "$TRANSCRIPT_PATH" ]; then
     SESSION_NAME=$(grep '^{"type":"custom-title"' "$TRANSCRIPT_PATH" 2>/dev/null | tail -1 | jq -r '.customTitle // empty' 2>/dev/null || true)
     SESSION_NAME="${SESSION_NAME% (Fork)}"
+    # Update cache for iTerm2 sync script to read
     [ -n "$SESSION_NAME" ] && echo "$SESSION_NAME" > "$SESSION_NAME_CACHE" 2>/dev/null
+elif [ -f "$SESSION_NAME_CACHE" ]; then
+    SESSION_NAME=$(cat "$SESSION_NAME_CACHE")
 fi
 
 # Activity state — quick read, no subprocess
@@ -205,7 +206,7 @@ ACTIVITY_BG="\033[48;5;248m"
 ACTIVITY_FG="\033[38;5;248m"
 ACTIVITY_FILE="$HOME/.claude/temp/.current_activity.json"
 if [ -f "$ACTIVITY_FILE" ]; then
-    ACTIVITY_JSON=$(<"$ACTIVITY_FILE" 2>/dev/null)
+    ACTIVITY_JSON=$(<"$ACTIVITY_FILE")
     if [ -n "$ACTIVITY_JSON" ]; then
         read -r A_STATUS A_TOOL A_DETAIL A_TS <<< "$(echo "$ACTIVITY_JSON" | jq -r '[(.status // "unknown"), (.tool // ""), (.detail // ""), (.timestamp // 0)] | @tsv' 2>/dev/null || echo "unknown   0")"
         NOW=$(date +%s)
@@ -230,6 +231,37 @@ fi
 # Extract a JSON string value using bash builtins only (~0ms vs ~15ms per jq call)
 json_val() { local k="\"$1\""; local s="${2#*$k:}"; s="${s#*\"}"; echo "${s%%\"*}"; }
 json_num() { local k="\"$1\""; local s="${2#*$k:}"; echo "${s%%[!0-9]*}"; }
+
+# ========== ROW PRINTER — wraps content at 42 chars (matches MODEL row width) ==========
+# Usage: print_row BG_VAR FG_VAR "LABEL" "content"
+# If content > 42 chars: wraps at last word boundary before 42, continuation on next line
+MAX_ROW_CONTENT=42
+print_row() {
+    local bg="$1" fg="$2" label="$3" content="$4"
+    local label_width=$(( ${#label} + 2 ))   # label + spaces
+    if [ "${#content}" -le "$MAX_ROW_CONTENT" ]; then
+        printf "${bg}${FG_WHITE}${BOLD} %s ${RESET}${bg}${FG_WHITE} %s ${RESET}${fg}${ARROW}${RESET}\n" \
+            "$label" "$content"
+    else
+        # Find last space at or before MAX_ROW_CONTENT
+        local line1="${content:0:$MAX_ROW_CONTENT}"
+        local break_at=$MAX_ROW_CONTENT
+        # Walk back to find last space
+        while [ "$break_at" -gt 10 ] && [ "${line1:$((break_at-1)):1}" != " " ]; do
+            break_at=$((break_at - 1))
+        done
+        local part1="${content:0:$break_at}"
+        local part2="${content:$break_at}"
+        part1="${part1%" "}"; part2="${part2# }"  # trim boundary spaces
+        # Pad label area on continuation line with spaces
+        local pad
+        pad=$(printf '%*s' "$label_width" '')
+        printf "${bg}${FG_WHITE}${BOLD} %s ${RESET}${bg}${FG_WHITE} %s ${RESET}${fg}${ARROW}${RESET}\n" \
+            "$label" "$part1"
+        printf "${bg}${FG_WHITE} %s ${RESET}${bg}${FG_WHITE} %s ${RESET}${fg}${ARROW}${RESET}\n" \
+            "$pad" "$part2"
+    fi
+}
 
 # Pre-read route files (pure bash, no subprocesses)
 GUIDE_TEXT="none"; SKILL_TEXT="none"; INTENT_TEXT="none"; LEARN_TEXT="none"
@@ -260,7 +292,19 @@ if [ -f "$SF" ]; then
     case "$SA" in
         loaded) BG_SKILL_R="\033[48;5;28m"; FG_SKILL_R="\033[38;5;28m"; SKILL_TEXT=$(json_val skill "$SJ") ;;
         offered) BG_SKILL_R="\033[48;5;24m"; FG_SKILL_R="\033[38;5;24m"
-            SC=$(json_num count "$SJ"); SKILL_TEXT="${SC:-0} options" ;;
+            SC=$(json_num count "$SJ")
+            SSKILLS=""
+            echo "$SJ" | grep -qF '"skills":' && SSKILLS=$(json_val skills "$SJ")
+            SCAT=$(json_val category "$SJ")
+            if [ -n "$SSKILLS" ] && [ "$SSKILLS" != "null" ]; then
+                # Show first 2 skill names + overflow count
+                SKILL_TEXT="${SSKILLS}"
+                [ "${SC:-0}" -gt 2 ] && SKILL_TEXT="${SSKILLS} +$((SC-2))"
+            elif [ -n "$SCAT" ]; then
+                SKILL_TEXT="${SCAT} (${SC:-0})"
+            else
+                SKILL_TEXT="${SC:-0} options"
+            fi ;;
         declined) BG_SKILL_R="\033[48;5;136m"; FG_SKILL_R="\033[38;5;136m"; SKILL_TEXT="declined" ;;
     esac
 fi
@@ -286,7 +330,15 @@ if [ -f "$LF" ]; then
     case "$LA" in
         loaded) BG_LEARN_R="\033[48;5;28m"; FG_LEARN_R="\033[38;5;28m"
             LC=$(json_num count "$LJ")
-            [ "${LC:-0}" = "1" ] && LEARN_TEXT="surfaced 1 past learning" || LEARN_TEXT="surfaced ${LC:-0} past learnings" ;;
+            LT=""
+            echo "$LJ" | grep -qF '"title":' && LT=$(json_val title "$LJ")
+            if [ -n "$LT" ] && [ "$LT" != "null" ]; then
+                # Show learning title snippet (truncate if >45 chars)
+                [ "${#LT}" -gt 45 ] && LT="${LT:0:42}..."
+                [ "${LC:-0}" -gt 1 ] && LEARN_TEXT="\"$LT\" +$((LC-1))" || LEARN_TEXT="\"$LT\""
+            else
+                [ "${LC:-0}" = "1" ] && LEARN_TEXT="surfaced 1 past learning" || LEARN_TEXT="surfaced ${LC:-0} past learnings"
+            fi ;;
         skipped) BG_LEARN_R="\033[48;5;136m"; FG_LEARN_R="\033[38;5;136m"; LEARN_TEXT="skipped" ;;
     esac
 fi
@@ -326,6 +378,19 @@ printf "${ACTIVITY_BG}${FG_BLACK}${BOLD} %s %s ${RESET}${ACTIVITY_FG}${ARROW}${R
 # Row 2: MODEL | Version | Thinking
 printf "${BG_CYAN}${FG_WHITE}${BOLD} MODEL ${RESET}${BG_CYAN}${FG_WHITE} %s ${RESET}${BG_GRAY}${FG_CYAN}${ARROW}${FG_WHITE} v%s ${RESET}${THINK_BG}${FG_GRAY}${ARROW}${FG_WHITE} %s ${RESET}${THINK_FG_NEXT}${ARROW}${RESET}\n" "$MODEL" "$CC_VERSION" "$THINK"
 
+# Row 2.5: AGENT — only shown when an agent/task is actively running
+AF="$HOME/.claude/temp/.agent_activity_${SESSION_ID}.json"
+[ -f "$AF" ] || AF="$HOME/.claude/temp/.agent_activity.json"
+if [ -f "$AF" ]; then
+    AJ=$(<"$AF")
+    AGENT_DESC=$(json_val description "$AJ")
+    AGENT_STARTED=$(json_num started "$AJ")
+    AGENT_ELAPSED=$(( $(date +%s) - ${AGENT_STARTED:-0} ))
+    AGENT_MINS=$((AGENT_ELAPSED / 60)); AGENT_SECS=$((AGENT_ELAPSED % 60))
+    [ "$AGENT_MINS" -gt 0 ] && AGENT_TIME="${AGENT_MINS}m ${AGENT_SECS}s" || AGENT_TIME="${AGENT_SECS}s"
+    print_row "\033[48;5;208m" "\033[38;5;208m" "AGENT" "${AGENT_DESC}  ${AGENT_TIME}"
+fi
+
 # Row 3: CTX
 printf "${BG_YELLOW}${FG_WHITE}${BOLD} CTX ${RESET}${BG_YELLOW}${FG_WHITE} %s ${RESET}${BG_BLUE}${FG_YELLOW}${ARROW}${FG_WHITE} %s%% used ${RESET}${BG_CTX_LEFT}${FG_BLUE}${ARROW}${FG_BLACK} %s%% left ${RESET}${FG_CTX_LEFT}${ARROW}${RESET}\n" "$TOKENS_DISPLAY" "$PERCENT" "$PERCENT_REMAINING"
 
@@ -350,17 +415,17 @@ BG_LB="\033[48;5;237m"; FG_LB="\033[38;5;244m"
 printf "${BG_ORANGE}${FG_BLACK}${BOLD} CLONE ${RESET}${BG_ORANGE}${FG_BLACK} %s ${RESET}${FG_ORANGE}${ARROW}${RESET}\n" "$REPO_NAME"
 printf "${BG_LB}${FG_LB}${BOLD} ID ${RESET}${BG_LB}${FG_LB} %s ${RESET}${FG_LB}${ARROW}${RESET}\n" "$SESSION_ID"
 
-# Row 8: GUIDE
-printf "${BG_GUIDE_R}${FG_WHITE}${BOLD} GUIDE ${RESET}${BG_GUIDE_R}${FG_WHITE} %s ${RESET}${FG_GUIDE_R}${ARROW}${RESET}\n" "$GUIDE_TEXT"
+# Row 9: GUIDE
+print_row "$BG_GUIDE_R" "$FG_GUIDE_R" "GUIDE" "$GUIDE_TEXT"
 
-# Row 9: SKILL
-printf "${BG_SKILL_R}${FG_WHITE}${BOLD} SKILL ${RESET}${BG_SKILL_R}${FG_WHITE} %s ${RESET}${FG_SKILL_R}${ARROW}${RESET}\n" "$SKILL_TEXT"
+# Row 10: SKILL — only shown when a skill was loaded, offered, or declined (hidden when "none")
+[ "$SKILL_TEXT" != "none" ] && print_row "$BG_SKILL_R" "$FG_SKILL_R" "SKILL" "$SKILL_TEXT"
 
-# Row 10: INTENT
-printf "${BG_INTENT_R}${FG_WHITE}${BOLD} INTENT ${RESET}${BG_INTENT_R}${FG_WHITE} %s ${RESET}${FG_INTENT_R}${ARROW}${RESET}\n" "$INTENT_TEXT"
+# Row 11: INTENT — only shown when a capability was actually routed (hidden when "none")
+[ "$INTENT_TEXT" != "none" ] && print_row "$BG_INTENT_R" "$FG_INTENT_R" "INTENT" "$INTENT_TEXT"
 
-# Row 11: LEARN
-printf "${BG_LEARN_R}${FG_WHITE}${BOLD} LEARN ${RESET}${BG_LEARN_R}${FG_WHITE} %s ${RESET}${FG_LEARN_R}${ARROW}${RESET}\n" "$LEARN_TEXT"
+# Row 12: LEARN
+print_row "$BG_LEARN_R" "$FG_LEARN_R" "LEARN" "$LEARN_TEXT"
 
 # ========== ITERM2 SYNC (write directly to parent TTY, background) ==========
 # Claude Code's TUI captures stdout — OSC sequences must bypass it via /dev/ttyNNN

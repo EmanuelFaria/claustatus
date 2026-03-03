@@ -167,15 +167,17 @@ async def get_tab_title(session) -> str | None:
 
 
 async def find_claude_session(
-    session, iterm_index: dict[str, dict], repo_index: dict[str, dict]
+    session, iterm_index: dict[str, dict], _repo_index: dict[str, dict]
 ) -> dict | None:
     """Match an iTerm2 session to Claude sync data.
 
     Strategy (priority order):
     1. Direct match: session.session_id against iterm_session_id from sync files (1:1)
-    2. Cached mapping from previous successful match
-    3. user.sessionId variable (set by this script on previous match)
-    4. Fallback: tab title against repo_names (ambiguous — only for old sync files)
+    2. Cached mapping — only if sync file is recent (<30 min) to prevent stale cross-contamination
+    3. user.sessionId variable (set by this script on previous match) — same recency check
+
+    NOTE: Tab title fallback removed. It matched by repo directory name which is ambiguous
+    (multiple Claude sessions can share the same repo), causing wrong badges to bleed across windows.
     """
     iterm_sid = session.session_id
 
@@ -183,29 +185,28 @@ async def find_claude_session(
     if iterm_sid in iterm_index:
         return iterm_index[iterm_sid]
 
-    # 2. Check our applied cache
+    # 2. Check our applied cache — require recent sync file to prevent stale matches
     cached = _applied.get(iterm_sid, {})
     cached_claude_sid = cached.get("claude_sid")
     if cached_claude_sid:
         sync_data = read_all_sync_files().get(cached_claude_sid)
-        if sync_data:
+        if sync_data and time.time() - sync_data.get("timestamp", 0) < 1800:
             return sync_data
+        # Stale or missing — evict the cache entry so it doesn't keep matching wrong session
+        _applied.pop(iterm_sid, None)
 
-    # 3. Try user.sessionId variable (set by us on previous successful match)
+    # 3. Try user.sessionId variable (set by us on previous match) — same recency check
     try:
         user_sid = await session.async_get_variable("user.sessionId")
         if user_sid and UUID_RE.match(str(user_sid).strip()):
             claude_sid = str(user_sid).strip()
             all_sync = read_all_sync_files()
             if claude_sid in all_sync:
-                return all_sync[claude_sid]
+                sync_data = all_sync[claude_sid]
+                if time.time() - sync_data.get("timestamp", 0) < 1800:
+                    return sync_data
     except Exception:
         pass
-
-    # 4. Fallback: tab title match (ambiguous, for sessions without iterm_session_id)
-    tab_title = await get_tab_title(session)
-    if tab_title and tab_title in repo_index:
-        return repo_index[tab_title]
 
     return None
 
@@ -254,7 +255,7 @@ async def apply_session_data(
     _applied[iterm_sid] = current
 
 
-async def apply_titles(session, tab, window, sync_data: dict) -> None:
+async def apply_titles(_session, tab, window, sync_data: dict) -> None:
     """Re-apply tab and window titles from sync data."""
     repo_name = sync_data.get("repo_name", "")
     claude_sid = sync_data.get("session_id", "")

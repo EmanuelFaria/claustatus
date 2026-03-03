@@ -9,6 +9,7 @@ A rich, real-time powerline-style status bar for [Claude Code](https://claude.ai
 ```
 ✓ Ready for input
 MODEL  Claude Opus 4.6 (1M context)  v2.1.63  🧠 ON
+AGENT  Read codebase for architecture review  2m 14s    ← only when agent running
 CTX    163,550  16% used  84% left
 CC%    133,050  13% used  87% left
 SES    23,204   $2.78     8m 11s API
@@ -16,21 +17,23 @@ NAME   statusline fix   REPO  PersonalOS-session-20260228-121307
 CLONE  PersonalOS-session-20260228-121307
 ID     3e6c5d9c-1014-4a3c-9fc6-9618e0756e88
 GUIDE  master_debugging.md ('api_failure')
-SKILL  8 options
-INTENT web_search → perplexity-sonar
-LEARN  "Use stat -c %Y not stat -f %m on macOS with GNU coreutils"
+SKILL  fix-everything, personalos-audit +6  ← first 2 skills + overflow count
+LEARN  "rebase before push"
 ```
 
 Plus conditional alerts:
 - 🚨 **PRECOMPACT NOW!** — animated red/yellow when context hits ≤20%
 - 🔔 **PASTE PRECOMPACT NOW** — animated green when `/precompact` output is ready to copy
+- **AGENT** row — orange, appears between MODEL and CTX, shows description + elapsed time when agents/subagents are running; disappears when done
 
 ## Features
 
 - **Real-time context tracking** — tokens used, percentage remaining, cost, API duration
 - **Model awareness** — shows model name, version, thinking on/off state
 - **Session identity** — session name, clone directory, UUID
-- **Progressive disclosure rows** — GUIDE, SKILL, INTENT, LEARN show what your hook system is doing
+- **Agent activity** — AGENT row shows background subagent description and elapsed time so you know Claude isn't frozen
+- **Progressive disclosure rows** — GUIDE, SKILL, INTENT, LEARN show what your hook system is doing (hidden when inactive)
+- **Content wrapping** — rows with long content wrap at 42 chars instead of truncating
 - **iTerm2 integration** — tab title, window title, and badge update automatically per-session
 - **Multi-session safe** — each session gets its own route files, no cross-contamination
 - **Fast** — single `jq` call, pure bash computation, ~40ms execution

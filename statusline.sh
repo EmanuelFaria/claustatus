@@ -508,8 +508,8 @@ if [ "$PRECOMPACT_READY" = true ]; then
         printf "\033[48;5;22m\033[92m\033[1m 🔔🔔  PASTE PRECOMPACT NOW  🔔🔔 \033[0m\n"
         printf "\033[42m\033[97m\033[1m 🔔🔔  PASTE PRECOMPACT NOW  🔔🔔 \033[0m\n"
     fi
-elif [ "$PRECOMPACT_RUNNING" = false ] && [ "${PERCENT_REMAINING:-100}" -le 15 ] 2>/dev/null && [ "${PERCENT_REMAINING:-100}" -gt 0 ] 2>/dev/null; then
-    # PRECOMPACT NOW — two rows, red/amber swap positions each render
+elif [ "$PRECOMPACT_RUNNING" = false ] && [ "${CC_PERCENT_LEFT:-100}" -le 15 ] 2>/dev/null && [ "${CC_PERCENT_LEFT:-100}" -gt 0 ] 2>/dev/null; then
+    # PRECOMPACT NOW — fires when Claude Code reports ≤15% remaining (authoritative source)
     if [ "$BLINK_STATE" -eq 0 ]; then
         printf "\033[41m\033[93m\033[1m 🚨🚨🚨  PRECOMPACT NOW!  🚨🚨🚨 \033[0m\n"
         printf "\033[43m\033[31m\033[1m 🚨🚨🚨  PRECOMPACT NOW!  🚨🚨🚨 \033[0m\n"
@@ -533,7 +533,7 @@ elif [ "$PRECOMPACT_RUNNING" = false ] && [ "${PERCENT_REMAINING:-100}" -le 15 ]
                 _W_NUM="${_W_PART#w}"
                 ITERM_WIN="window $(( _W_NUM + 1 ))" 2>/dev/null || true
             fi
-            printf '%s' "${PERCENT_REMAINING}% context left in ${ITERM_WIN} (${SESSION_NAME:-${REPO_NAME:-session}})" > "$SENTINEL_FILE" 2>/dev/null
+            printf '%s' "${CC_PERCENT_LEFT}% context left in ${ITERM_WIN} (${SESSION_NAME:-${REPO_NAME:-session}})" > "$SENTINEL_FILE" 2>/dev/null
         fi
     fi
 else

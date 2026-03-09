@@ -9,31 +9,34 @@ A rich, real-time powerline-style status bar for [Claude Code](https://claude.ai
 ```
 ✓ Ready for input
 MODEL  Claude Opus 4.6 (1M context)  v2.1.63  🧠 ON
-AGENT  Read codebase for architecture review  2m 14s    ← only when agent running
+AGENT  Read codebase for architecture...  2m 14s    ← only when agent running
 CTX    163,550  16% used  84% left
-CC%    133,050  13% used  87% left
-SES    23,204   $2.78     8m 11s API
-NAME   statusline fix   REPO  PersonalOS-session-20260228-121307
+MTHS   $3.42  3/2026
+NAME   statusline fix                    ← only when session has been /renamed
+REPO   PersonalOS-session-20260228-...
 CLONE  PersonalOS-session-20260228-121307
 ID     3e6c5d9c-1014-4a3c-9fc6-9618e0756e88
 GUIDE  master_debugging.md ('api_failure')
 SKILL  maintenance (8)
 LEARN  "rebase before push"
+LIMITS 58/60 req  195K/200K tok/min       ← only when API key is configured
 ```
 
 Plus conditional alerts:
-- 🚨 **PRECOMPACT NOW!** — animated red/yellow when context hits ≤20%
+- 🚨 **PRECOMPACT NOW!** — animated red/yellow when context hits ≤15%
 - 🔔 **PASTE PRECOMPACT NOW** — animated green when `/precompact` output is ready to copy
 - **AGENT** row — orange, appears between MODEL and CTX, shows description + elapsed time when agents/subagents are running; disappears when done
 
 ## Features
 
-- **Real-time context tracking** — tokens used, percentage remaining, cost, API duration
+- **Real-time context tracking** — tokens used, percentage remaining
+- **Monthly cost tracking** — MTHS row accumulates API spend across all sessions; auto-resets each month
+- **API rate limits** — LIMITS row shows requests and tokens remaining per minute (requires `ANTHROPIC_API_KEY`)
 - **Model awareness** — shows model name, version, thinking on/off state
-- **Session identity** — session name (from `/rename`), clone directory, UUID
+- **Session identity** — session name (from `/rename`), repo name, clone directory, UUID
 - **Agent activity** — AGENT row shows background subagent description and elapsed time
 - **Progressive disclosure rows** — GUIDE, SKILL, INTENT, LEARN show what your hook system is doing (hidden when inactive)
-- **Content wrapping** — rows with long content wrap at 42 chars instead of truncating
+- **Content wrapping** — rows with long content wrap at 34 chars instead of truncating
 - **iTerm2 integration** — tab title, window title, badge, and Session Name update automatically per-session
 - **Multi-session safe** — each session gets its own route files, no cross-contamination
 - **Fast** — single `jq` call, pure bash computation, ~40ms execution
@@ -240,19 +243,82 @@ Source: your `UserPromptSubmit` hook queries a database of past learnings by key
 
 ---
 
-To populate any of these rows, your `UserPromptSubmit` hook writes JSON to `~/.claude/temp/.{guide|skill|intent|learn}_route_{SESSION_ID}.json`. See [`hooks/route_file_format.md`](hooks/route_file_format.md) for the exact JSON schema and example hook code.
+## MTHS — Monthly Cost Tracking
+
+The MTHS (MontHS) row shows accumulated API spend across all sessions for the current month.
+
+```
+MTHS   $3.42  3/2026
+```
+
+- Tracks the **delta** between each render's session cost and the previous render, adding only new spend
+- Per-session "last seen" file (`~/.claude/temp/.ses_last_{SID}`) prevents double-counting across renders
+- Monthly total stored in `~/.claude/temp/.monthly_cost_YYYY-MM` — auto-resets on the first of each month
+- Color: 🟢 green under $10 / 🟡 amber $10–$50 / 🔴 red $50+
+
+This tracks **direct API costs only**, not Claude Max subscription fees.
+
+## LIMITS — API Rate Limits
+
+The LIMITS row shows remaining requests and tokens for the current rate-limit window:
+
+```
+LIMITS  58/60 req  195K/200K tok/min
+```
+
+- Shown only when `~/.claude/temp/.api_limits.json` exists and is <20 minutes old
+- Background refresh runs every 10 minutes via a `HEAD` request to `api.anthropic.com/v1/models`
+- Requires `ANTHROPIC_API_KEY` in your shell environment or macOS Keychain as `anthropic_api_key`
+- Color: 🟢 green >30% remaining / 🟡 amber ≤30% / 🔴 red ≤10%
+
+To add your key to Keychain:
+```bash
+security add-generic-password -s "anthropic_api_key" -a "$USER" -w "sk-ant-..."
+```
+
+---
+
+To populate the GUIDE/SKILL/INTENT/LEARN rows, your `UserPromptSubmit` hook writes JSON to `~/.claude/temp/.{guide|skill|intent|learn}_route_{SESSION_ID}.json`. See [`hooks/route_file_format.md`](hooks/route_file_format.md) for the exact JSON schema and example hook code.
 
 ## PRECOMPACT Alerts
 
-The statusline shows conditional double-height alerts:
+The statusline shows conditional double-height alerts at the top:
 
-- **🚨 PRECOMPACT NOW!** — appears when context is ≤20% remaining. Animated red/yellow with ANSI blink (requires iTerm2 **Settings > Profiles > Text > "Blinking text allowed"**)
-- **🔔 PASTE PRECOMPACT NOW** — appears when `~/.claude/temp/.precompact_ready` exists and is <5 minutes old.
+- **🚨 PRECOMPACT NOW!** — appears when context is ≤15% remaining. Shown as two alternating rows that swap positions every second (even/odd of `date +%S`), creating a visible flash effect since ANSI blink is stripped by Claude Code's TUI. Hidden automatically while `/precompact` is running (no double-alert during the extraction).
+- **🔔 PASTE PRECOMPACT NOW** — appears when `~/.claude/temp/.precompact_ready` exists and is <5 minutes old. Same two-row alternating display in green.
 
-If you use a `/precompact` script, touch this file when your output is ready:
+Priority: PASTE PRECOMPACT (if ready) > PRECOMPACT NOW > nothing.
+
+Both alerts use the two-row swap for visibility; ANSI blink is not required and has no effect inside Claude Code's TUI.
+
+### Native macOS Notifications + iTerm2 Tab Flash (Optional)
+
+`~/.claude/scripts/precompact_alert_watcher.py` watches the same flag files and fires system-level alerts when either state triggers:
+
+- **macOS notification** — banner with the alert type and window number (e.g. "window 19 — PRECOMPACT NOW")
+- **iTerm2 tab flash** — turns the terminal tab red for 2 seconds, then resets
+- **Dock fireworks** — bounces the iTerm2 dock icon
+
+Runs via LaunchAgent `com.personalos.precompact-alert-watcher`, checks every 5 seconds, 2-minute cooldown between repeat notifications for the same alert.
+
+The window number is extracted from the `iterm_session_id` field written by `statusline.sh` into `.iterm_sync_{SID}.json` (format: `w{N}t{M}p{L}:{UUID}` → window N+1). The TTY path is also written to that file so the watcher knows which terminal to flash.
+
+### Integration with a `/precompact` script
+
+If you use a `/precompact` script (or a PreCompact hook), signal the statusline at two points:
+
 ```bash
+# 1. At the START of extraction — suppresses PRECOMPACT NOW while running
+touch ~/.claude/temp/.precompact_running
+
+# 2. When output is ready to paste — triggers PASTE PRECOMPACT NOW alert
 touch ~/.claude/temp/.precompact_ready
+rm -f ~/.claude/temp/.precompact_running
 ```
+
+Both flag files are cleared as the very first action of any PreCompact hook — before the recursion guard runs — so the PASTE PRECOMPACT NOW alert disappears even if the hook exits early.
+
+The `.precompact_running` flag expires automatically after 2 minutes if not removed. The `.precompact_ready` flag expires after 5 minutes.
 
 ## Known Limitations
 

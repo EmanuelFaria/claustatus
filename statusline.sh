@@ -4,7 +4,7 @@
 # Custom Claude Code Status Line (Powerline Style) - SPEED-OPTIMIZED
 # Single jq call extracts all fields. Target: <50ms total execution.
 #
-# Rows: Activity, MODEL, CTX, CC%, SES, NAME+REPO, CLONE+ID, GUIDE, SKILL, INTENT, LEARN
+# Rows: Activity, MODEL, CTX, USAGE, API$, NAME, REPO, CLONE+ID, GUIDE, SKILL, INTENT, LEARN, LIMITS
 
 # ANSI Color codes — basic 16-color only (8-bit breaks Claude Code TUI redraws)
 RESET="\033[0m"
@@ -13,8 +13,8 @@ FG_BLACK="\033[30m"
 FG_WHITE="\033[97m"
 
 # ── Row: Model ───────────────────────────────────────────────────
-BG_CYAN="\033[46m"          # Model name        cyan
-FG_CYAN="\033[36m"
+BG_CYAN="\033[45m"          # Model name        magenta
+FG_CYAN="\033[35m"
 BG_GRAY="\033[44m"          # Version           blue
 FG_GRAY="\033[34m"
 BG_GREEN="\033[42m"         # Thinking ON       green
@@ -23,34 +23,18 @@ BG_RED="\033[41m"           # Thinking OFF      red
 FG_RED="\033[31m"
 
 # ── Row: CTX ─────────────────────────────────────────────────────
-BG_YELLOW="\033[46m"        # CTX label         cyan
+BG_YELLOW="\033[46m"        # CTX label         cyan  (distinct from MODEL magenta)
 FG_YELLOW="\033[36m"
 BG_BLUE="\033[44m"          # CTX used%         blue
 FG_BLUE="\033[34m"
 BG_CTX_LEFT="\033[42m"      # CTX left%         green
 FG_CTX_LEFT="\033[32m"
 
-# ── Row: CC% ─────────────────────────────────────────────────────
-BG_PURPLE="\033[45m"        # CC% label         magenta
-FG_PURPLE="\033[35m"
-BG_TEAL="\033[44m"          # CC% used%         blue
-FG_TEAL="\033[34m"
-BG_LIME="\033[46m"          # CC% left%         cyan
-FG_LIME="\033[36m"
-
-# ── Row: SES ─────────────────────────────────────────────────────
-BG_SLATE="\033[43m"         # SES label         yellow
-FG_SLATE="\033[33m"
-BG_STEEL="\033[43m"         # SES cost          yellow
-FG_STEEL="\033[33m"
-BG_SKY="\033[43m"           # SES duration      yellow
-FG_SKY="\033[33m"
-
 # ── Rows: Location ───────────────────────────────────────────────
 BG_FOREST="\033[42m"        # REPO              green
 FG_FOREST="\033[32m"
-BG_ORANGE="\033[42m"        # CLONE             green
-FG_ORANGE="\033[32m"
+BG_ORANGE="\033[43m"        # CLONE             amber/yellow  (distinct from REPO green)
+FG_ORANGE="\033[33m"
 
 # Powerline arrow (keeping the character — it's the escape codes that break things)
 ARROW=""
@@ -64,7 +48,7 @@ BASE_OVERHEAD=30500
 # ========== SINGLE JQ CALL — extract everything at once ==========
 INPUT=$(cat)
 
-# Save JSON to temp file for other scripts to read
+# Save JSON to temp file for other scripts to read (global + per-session)
 echo "$INPUT" > "$HOME/.claude/temp/statusline_data.json" 2>/dev/null &
 
 # One jq call extracts all fields, separated by Unit Separator (0x1F)
@@ -94,6 +78,9 @@ IFS=$'\x1f' read -r MODEL CC_VERSION PROJECT_DIR CONTEXT_SIZE \
     (.transcript_path // "")
 ] | map(tostring) | join("\u001f")')"
 
+# Per-session data file (enables multi-session consumers like precompact_alert_watcher)
+[[ -n "$SESSION_ID" ]] && echo "$INPUT" > "$HOME/.claude/temp/statusline_data_${SESSION_ID}.json" 2>/dev/null &
+
 # ========== COMPUTED VALUES (pure bash, no subprocesses) ==========
 
 # Repo name from project dir
@@ -108,7 +95,7 @@ GITHUB_REPO_NAME="$REPO_NAME"
 if [ -n "$PROJECT_DIR" ]; then
     GLOBAL_GIT_CACHE="/tmp/statusline-git-${PROJECT_DIR//\//_}"
     if [ -f "$GLOBAL_GIT_CACHE" ]; then
-        CACHE_AGE=$(( $(date +%s) - $(stat -c %Y "$GLOBAL_GIT_CACHE" 2>/dev/null || /usr/bin/stat -f %m "$GLOBAL_GIT_CACHE" 2>/dev/null || echo 0) ))
+        CACHE_AGE=$(( $(date +%s) - $(/usr/bin/stat -f %m "$GLOBAL_GIT_CACHE" 2>/dev/null || echo 0) ))
         if [ "$CACHE_AGE" -lt 30 ]; then
             GITHUB_REPO_NAME=$(cat "$GLOBAL_GIT_CACHE")
         else
@@ -160,18 +147,71 @@ fi
 PERCENT_REMAINING=$((100 - PERCENT))
 
 # Session tokens and cost (SES_COST is float — use printf, not arithmetic)
-SES_TOTAL_INPUT=${SES_TOTAL_INPUT:-0}; SES_TOTAL_INPUT=${SES_TOTAL_INPUT%.*}
-SES_TOTAL_OUTPUT=${SES_TOTAL_OUTPUT:-0}; SES_TOTAL_OUTPUT=${SES_TOTAL_OUTPUT%.*}
-SES_TOKENS=$(( SES_TOTAL_INPUT + SES_TOTAL_OUTPUT ))
-SES_TOKENS_DISPLAY=$(printf "%'d" "$SES_TOKENS" 2>/dev/null || echo "$SES_TOKENS")
 # SES_COST may have trailing tab from read; strip it
 SES_COST="${SES_COST:-0}"
 SES_COST="${SES_COST%%[^0-9.e+-]*}"
 SES_COST_DISPLAY=$(printf '$%.2f' "$SES_COST" 2>/dev/null || echo '$0.00')
 SES_DURATION_MS=${SES_DURATION_MS:-0}; SES_DURATION_MS=${SES_DURATION_MS%.*}
-SES_MINS=$((SES_DURATION_MS / 60000))
-SES_SECS=$(((SES_DURATION_MS % 60000) / 1000))
 
+# ── Cost tracking: monthly (API$) + weekly (USAGE) — delta computed once ────────
+# Both accumulate the same per-session delta; SES_LAST_FILE is updated after both.
+# Monthly file: YYYY-MM  |  Weekly file: YYYY-Www (ISO week)
+MONTHLY_COST_FILE="$HOME/.claude/temp/.monthly_cost_$(date +%Y-%m)"
+WEEKLY_COST_FILE="$HOME/.claude/temp/.weekly_cost_$(date +%Y-W%V)"
+SES_LAST_FILE="$HOME/.claude/temp/.ses_last_${SESSION_ID}"
+MONTHLY_MONTH=$(date +"%-m/%Y")
+MONTHLY_COST_DISPLAY='$0.00'
+WEEKLY_COST_DISPLAY='WK 0%'
+WEEKLY_BUDGET_USD="${WEEKLY_BUDGET_USD:-100}"   # override: export WEEKLY_BUDGET_USD=50
+BG_MTHS="\033[48;5;30m";  FG_MTHS="\033[38;5;30m"   # teal default (API$ row)
+BG_USAGE="\033[48;5;25m"; FG_USAGE="\033[38;5;25m"  # blue default (USAGE row)
+
+if [ -n "$SESSION_ID" ]; then
+    read -r MONTHLY_TOTAL WEEKLY_TOTAL <<< "$(awk \
+        -v cur="${SES_COST:-0}" \
+        -v lf="$SES_LAST_FILE" \
+        -v mf="$MONTHLY_COST_FILE" \
+        -v wf="$WEEKLY_COST_FILE" \
+    'BEGIN {
+        last = 0
+        if ((getline l < lf) > 0) last = l + 0; close(lf)
+        delta = cur - last; if (delta < 0) delta = 0
+        mtotal = 0
+        if ((getline t < mf) > 0) mtotal = t + 0; close(mf)
+        mtotal += delta
+        wtotal = 0
+        if ((getline t < wf) > 0) wtotal = t + 0; close(wf)
+        wtotal += delta
+        if (cur   > 0) { printf "%.4f\n", cur    > lf; close(lf) }
+        if (delta > 0) { printf "%.4f\n", mtotal > mf; close(mf)
+                         printf "%.4f\n", wtotal > wf; close(wf) }
+        printf "%.4f %.4f", mtotal, wtotal
+    }' /dev/null 2>/dev/null)"
+
+    MONTHLY_COST_DISPLAY=$(printf '$%.2f' "${MONTHLY_TOTAL:-0}" 2>/dev/null || echo '$0.00')
+
+    # Weekly percentage of configurable budget
+    WK_PCT=$(awk -v w="${WEEKLY_TOTAL:-0}" -v b="${WEEKLY_BUDGET_USD:-100}" \
+        'BEGIN { pct = (b > 0) ? int(w * 100 / b + 0.5) : 0; if (pct > 999) pct = 999; print pct }')
+    WEEKLY_COST_DISPLAY="WK ${WK_PCT}%"
+
+    # Color: API$ (monthly absolute $)
+    MC_INT=$(printf '%.0f' "${MONTHLY_TOTAL:-0}" 2>/dev/null || echo 0)
+    if   [ "${MC_INT:-0}" -ge 50 ] 2>/dev/null; then
+        BG_MTHS="\033[48;5;196m"; FG_MTHS="\033[38;5;196m"   # red  ≥$50
+    elif [ "${MC_INT:-0}" -ge 10 ] 2>/dev/null; then
+        BG_MTHS="\033[48;5;130m"; FG_MTHS="\033[38;5;130m"   # orange ≥$10
+    fi
+
+    # Color: USAGE (weekly %)
+    if   [ "${WK_PCT:-0}" -ge 90 ] 2>/dev/null; then
+        BG_USAGE="\033[48;5;196m"; FG_USAGE="\033[38;5;196m"  # red   ≥90%
+    elif [ "${WK_PCT:-0}" -ge 75 ] 2>/dev/null; then
+        BG_USAGE="\033[48;5;130m"; FG_USAGE="\033[38;5;130m"  # orange ≥75%
+    elif [ "${WK_PCT:-0}" -ge 50 ] 2>/dev/null; then
+        BG_USAGE="\033[48;5;136m"; FG_USAGE="\033[38;5;136m"  # yellow ≥50%
+    fi
+fi
 # Thinking status — read settings once with single jq call
 SETTINGS="$HOME/.claude/settings.json"
 read -r ALWAYS_THINKING THINKING_SETTING <<< "$(jq -r '[(.alwaysThinkingEnabled // false), (.thinking // "null")] | @tsv' "$SETTINGS" 2>/dev/null || echo "false null")"
@@ -235,7 +275,7 @@ json_num() { local k="\"$1\""; local s="${2#*$k:}"; echo "${s%%[!0-9]*}"; }
 # ========== ROW PRINTER — wraps content at 42 chars (matches MODEL row width) ==========
 # Usage: print_row BG_VAR FG_VAR "LABEL" "content"
 # If content > 42 chars: wraps at last word boundary before 42, continuation on next line
-MAX_ROW_CONTENT=42
+MAX_ROW_CONTENT=34
 print_row() {
     local bg="$1" fg="$2" label="$3" content="$4"
     local label_width=$(( ${#label} + 2 ))   # label + spaces
@@ -260,6 +300,51 @@ print_row() {
             "$label" "$part1"
         printf "${bg}${FG_WHITE} %s ${RESET}${bg}${FG_WHITE} %s ${RESET}${fg}${ARROW}${RESET}\n" \
             "$pad" "$part2"
+    fi
+}
+
+# ── Width-aware layout ─────────────────────────────────────────────────────────
+# AVAIL_W = terminal width minus space reserved for Claude Code's right-side messages.
+# Override: export CC_RIGHT_RESERVE=55  (default 42)
+: "${COLUMNS:=120}"
+: "${CC_RIGHT_RESERVE:=42}"
+AVAIL_W=$(( COLUMNS - CC_RIGHT_RESERVE ))
+(( AVAIL_W < 50 )) && AVAIL_W=50
+
+# flex_segments: renders a powerline row from named segments.
+# Args in groups of 4: BG_ESC  FG_ESC  LABEL  CONTENT
+#   LABEL   — bold label text; empty string uses "·" when stacked
+#   CONTENT — plain text (no ANSI); used to measure width
+# Single-line when total visible width ≤ AVAIL_W; stacks to separate rows otherwise.
+flex_segments() {
+    local -a a=("$@")
+    local n=$(( ${#a[@]} / 4 ))
+    # Estimate total visible width
+    local w=1
+    for (( i=0; i<n; i++ )); do
+        local lbl="${a[$((i*4+2))]}" con="${a[$((i*4+3))]}"
+        [[ -n "$lbl" ]] && w=$(( w + ${#lbl} + ${#con} + 5 )) \
+                        || w=$(( w + ${#con} + 3 ))
+    done
+    if (( w <= AVAIL_W )); then
+        # ── Single-line powerline ──────────────────────────────────────────────
+        local prev_fg=""
+        for (( i=0; i<n; i++ )); do
+            local bg="${a[$((i*4))]}" fg="${a[$((i*4+1))]}"
+            local lbl="${a[$((i*4+2))]}" con="${a[$((i*4+3))]}"
+            (( i > 0 )) && printf "%b%b%b" "$bg" "$prev_fg" "$ARROW"
+            [[ -n "$lbl" ]] && printf "%b%b%b %s %b%b" "$bg" "$FG_WHITE" "$BOLD" "$lbl" "$RESET" "$bg"
+            printf "%b %s %b" "$FG_WHITE" "$con" "$RESET"
+            prev_fg="$fg"
+        done
+        printf "%b%b%b\n" "$prev_fg" "$ARROW" "$RESET"
+    else
+        # ── Stacked: one print_row per segment ────────────────────────────────
+        for (( i=0; i<n; i++ )); do
+            local bg="${a[$((i*4))]}" fg="${a[$((i*4+1))]}"
+            local lbl="${a[$((i*4+2))]}" con="${a[$((i*4+3))]}"
+            print_row "$bg" "$fg" "${lbl:-·}" "$con"
+        done
     fi
 }
 
@@ -293,8 +378,7 @@ if [ -f "$SF" ]; then
         loaded) BG_SKILL_R="\033[48;5;28m"; FG_SKILL_R="\033[38;5;28m"; SKILL_TEXT=$(json_val skill "$SJ") ;;
         offered) BG_SKILL_R="\033[48;5;24m"; FG_SKILL_R="\033[38;5;24m"
             SC=$(json_num count "$SJ")
-            SSKILLS=""
-            echo "$SJ" | grep -qF '"skills":' && SSKILLS=$(json_val skills "$SJ")
+            SSKILLS=$(json_val skills "$SJ")
             SCAT=$(json_val category "$SJ")
             if [ -n "$SSKILLS" ] && [ "$SSKILLS" != "null" ]; then
                 # Show first 2 skill names + overflow count
@@ -330,8 +414,7 @@ if [ -f "$LF" ]; then
     case "$LA" in
         loaded) BG_LEARN_R="\033[48;5;28m"; FG_LEARN_R="\033[38;5;28m"
             LC=$(json_num count "$LJ")
-            LT=""
-            echo "$LJ" | grep -qF '"title":' && LT=$(json_val title "$LJ")
+            LT=$(json_val title "$LJ")
             if [ -n "$LT" ] && [ "$LT" != "null" ]; then
                 # Show learning title snippet (truncate if >45 chars)
                 [ "${#LT}" -gt 45 ] && LT="${LT:0:42}..."
@@ -343,17 +426,56 @@ if [ -f "$LF" ]; then
     esac
 fi
 
+# ── API rate limits (from background-refreshed cache) ─────────────────────────
+# Background subshell below fetches headers from api.anthropic.com every 10 min.
+# Requires ANTHROPIC_API_KEY in env, or stored in Keychain as "anthropic_api_key".
+LIMITS_TEXT="none"
+BG_LIMITS_R="\033[48;5;240m"; FG_LIMITS_R="\033[38;5;240m"
+API_LIMITS_FILE="$HOME/.claude/temp/.api_limits.json"
+
+if [ -f "$API_LIMITS_FILE" ]; then
+    LIMITS_CACHE_AGE=$(( $(date +%s) - $(/usr/bin/stat -f %m "$API_LIMITS_FILE" 2>/dev/null || echo 0) ))
+    if [ "$LIMITS_CACHE_AGE" -lt 1200 ]; then   # show if cache <20 min old
+        LMJ=$(<"$API_LIMITS_FILE")
+        LR_REM=$(json_num req_remaining "$LMJ")
+        LR_LIM=$(json_num req_limit "$LMJ")
+        LT_REM=$(json_num tok_remaining "$LMJ")
+        LT_LIM=$(json_num tok_limit "$LMJ")
+        if [ -n "$LR_LIM" ] && [ "${LR_LIM:-0}" -gt 0 ] 2>/dev/null; then
+            LT_REM_K=$(( ${LT_REM:-0} / 1000 ))
+            LT_LIM_K=$(( ${LT_LIM:-0} / 1000 ))
+            LIMITS_TEXT="${LR_REM}/${LR_LIM} req  ${LT_REM_K}K/${LT_LIM_K}K tok/min"
+            LIMITS_REQ_TEXT="${LR_REM}/${LR_LIM} req"
+            LIMITS_TOK_TEXT="${LT_REM_K}K/${LT_LIM_K}K tok/min"
+            LR_PCT=$(( ${LR_REM:-0} * 100 / ${LR_LIM:-1} ))
+            if [ "${LR_PCT:-100}" -le 10 ] 2>/dev/null; then
+                BG_LIMITS_R="\033[48;5;196m"; FG_LIMITS_R="\033[38;5;196m"   # red
+            elif [ "${LR_PCT:-100}" -le 30 ] 2>/dev/null; then
+                BG_LIMITS_R="\033[48;5;136m"; FG_LIMITS_R="\033[38;5;136m"   # amber
+            else
+                BG_LIMITS_R="\033[48;5;28m"; FG_LIMITS_R="\033[38;5;28m"     # green
+            fi
+        fi
+    fi
+fi
+
+# ========== PARENT TTY (needed for iTerm2 fireworks + badge, resolved once) ==========
+PARENT_TTY="/dev/$(ps -o tty= -p $PPID 2>/dev/null | tr -d ' ')"
+
 # ========== OUTPUT — all 12 rows, all printf ==========
 
 # Row 0: PRECOMPACT alerts (conditional, double-height)
-# Priority: PASTE PRECOMPACT (flag exists) > PRECOMPACT NOW (≤20% remaining)
-# Animation: \033[5m = ANSI blink (requires iTerm2 Profiles > Text > "Blinking text allowed")
+# Priority: PASTE PRECOMPACT (flag exists) > PRECOMPACT NOW (≤15% remaining)
+# Animation: swap two rows on alternating seconds — creates visible flash effect
+# Per-session flags prevent multi-session cross-contamination
 PRECOMPACT_READY_FILE="$HOME/.claude/temp/.precompact_ready"
+PRECOMPACT_RUNNING_FILE="$HOME/.claude/temp/.precompact_running"
+PRECOMPACT_ALERTED_FILE="$HOME/.claude/temp/.precompact_alerted_${SESSION_ID}"
 PRECOMPACT_READY=false
 
 # Check if precompact output is ready to paste (5-min expiry)
 if [ -f "$PRECOMPACT_READY_FILE" ]; then
-    READY_MTIME=$(stat -c %Y "$PRECOMPACT_READY_FILE" 2>/dev/null || /usr/bin/stat -f %m "$PRECOMPACT_READY_FILE" 2>/dev/null || echo 0)
+    READY_MTIME=$(/usr/bin/stat -f %m "$PRECOMPACT_READY_FILE" 2>/dev/null || echo 0)
     READY_AGE=$(( $(date +%s) - READY_MTIME ))
     if [ "$READY_AGE" -lt 300 ]; then
         PRECOMPACT_READY=true
@@ -362,21 +484,71 @@ if [ -f "$PRECOMPACT_READY_FILE" ]; then
     fi
 fi
 
+# Check if precompact is currently running (suppress PRECOMPACT NOW while running)
+PRECOMPACT_RUNNING=false
+if [ -f "$PRECOMPACT_RUNNING_FILE" ]; then
+    RUN_AGE=$(( $(date +%s) - $(/usr/bin/stat -f %m "$PRECOMPACT_RUNNING_FILE" 2>/dev/null || echo 0) ))
+    [ "$RUN_AGE" -lt 120 ] && PRECOMPACT_RUNNING=true || rm -f "$PRECOMPACT_RUNNING_FILE"
+fi
+
+# Claude Code TUI strips \033[5m (blink) before rendering.
+# Workaround: swap the two rows on alternating seconds — each re-render flips the
+# color bands, creating a visible "flash" effect tied to the clock.
+BLINK_STATE=$(( $(date +%S) % 2 ))
+
 if [ "$PRECOMPACT_READY" = true ]; then
-    # PASTE PRECOMPACT NOW — green, blink. Precompact text is ready to copy.
-    printf "\033[5m\033[42m\033[97m\033[1m 🔔🔔  PASTE PRECOMPACT NOW  🔔🔔 \033[0m\n"
-    printf "\033[5m\033[42m\033[30m\033[1m 🔔🔔  PASTE PRECOMPACT NOW  🔔🔔 \033[0m\n"
-elif [ "${PERCENT_REMAINING:-100}" -le 20 ] 2>/dev/null && [ "${PERCENT_REMAINING:-100}" -gt 0 ] 2>/dev/null; then
-    # PRECOMPACT NOW — red/yellow, blink. Context running low, run /precompact.
-    printf "\033[5m\033[41m\033[93m\033[1m 🚨🚨🚨  PRECOMPACT NOW!  🚨🚨🚨 \033[0m\n"
-    printf "\033[5m\033[43m\033[31m\033[1m 🚨🚨🚨  PRECOMPACT NOW!  🚨🚨🚨 \033[0m\n"
+    # PASTE PRECOMPACT NOW — two rows, bright/dark green swap positions each render
+    # Clear sentinels — output is ready, no need to keep warning or re-trigger alerts
+    rm -f "$PRECOMPACT_ALERTED_FILE" 2>/dev/null
+    [ -n "${SESSION_ID:-}" ] && rm -f "$HOME/.claude/temp/.precompact_needed_${SESSION_ID}" 2>/dev/null
+    if [ "$BLINK_STATE" -eq 0 ]; then
+        printf "\033[42m\033[97m\033[1m 🔔🔔  PASTE PRECOMPACT NOW  🔔🔔 \033[0m\n"
+        printf "\033[48;5;22m\033[92m\033[1m 🔔🔔  PASTE PRECOMPACT NOW  🔔🔔 \033[0m\n"
+    else
+        printf "\033[48;5;22m\033[92m\033[1m 🔔🔔  PASTE PRECOMPACT NOW  🔔🔔 \033[0m\n"
+        printf "\033[42m\033[97m\033[1m 🔔🔔  PASTE PRECOMPACT NOW  🔔🔔 \033[0m\n"
+    fi
+elif [ "$PRECOMPACT_RUNNING" = false ] && [ "${PERCENT_REMAINING:-100}" -le 15 ] 2>/dev/null && [ "${PERCENT_REMAINING:-100}" -gt 0 ] 2>/dev/null; then
+    # PRECOMPACT NOW — two rows, red/amber swap positions each render
+    if [ "$BLINK_STATE" -eq 0 ]; then
+        printf "\033[41m\033[93m\033[1m 🚨🚨🚨  PRECOMPACT NOW!  🚨🚨🚨 \033[0m\n"
+        printf "\033[43m\033[31m\033[1m 🚨🚨🚨  PRECOMPACT NOW!  🚨🚨🚨 \033[0m\n"
+    else
+        printf "\033[43m\033[31m\033[1m 🚨🚨🚨  PRECOMPACT NOW!  🚨🚨🚨 \033[0m\n"
+        printf "\033[41m\033[93m\033[1m 🚨🚨🚨  PRECOMPACT NOW!  🚨🚨🚨 \033[0m\n"
+    fi
+    # One-shot urgent sound + fireworks: play only the first time threshold is crossed per session
+    if [ ! -f "$PRECOMPACT_ALERTED_FILE" ]; then
+        touch "$PRECOMPACT_ALERTED_FILE"
+        [ -c "$PARENT_TTY" ] && printf '\e]1337;RequestAttention=fireworks\a' > "$PARENT_TTY"
+        afplay /System/Library/Sounds/Sosumi.aiff 2>/dev/null &
+    fi
+    # Write sentinel file for PostToolUse hook to inject "pause ASAP" into conversation
+    if [ -n "$SESSION_ID" ]; then
+        SENTINEL_FILE="$HOME/.claude/temp/.precompact_needed_${SESSION_ID}"
+        if [ ! -f "$SENTINEL_FILE" ] || [ $(( $(date +%s) - $(/usr/bin/stat -f %m "$SENTINEL_FILE" 2>/dev/null || echo 0) )) -gt 120 ]; then
+            ITERM_WIN="window ?"
+            if [ -n "${ITERM_SESSION_ID:-}" ]; then
+                _W_PART="${ITERM_SESSION_ID%%t*}"
+                _W_NUM="${_W_PART#w}"
+                ITERM_WIN="window $(( _W_NUM + 1 ))" 2>/dev/null || true
+            fi
+            printf '%s' "${PERCENT_REMAINING}% context left in ${ITERM_WIN} (${SESSION_NAME:-${REPO_NAME:-session}})" > "$SENTINEL_FILE" 2>/dev/null
+        fi
+    fi
+else
+    # Context is healthy — clear the alert sentinel so it re-fires if threshold crossed again
+    rm -f "$PRECOMPACT_ALERTED_FILE" 2>/dev/null
 fi
 
 # Row 1: Activity
 printf "${ACTIVITY_BG}${FG_BLACK}${BOLD} %s %s ${RESET}${ACTIVITY_FG}${ARROW}${RESET}\n" "$ACTIVITY_ICON" "$ACTIVITY_DETAIL"
 
-# Row 2: MODEL | Version | Thinking
-printf "${BG_CYAN}${FG_WHITE}${BOLD} MODEL ${RESET}${BG_CYAN}${FG_WHITE} %s ${RESET}${BG_GRAY}${FG_CYAN}${ARROW}${FG_WHITE} v%s ${RESET}${THINK_BG}${FG_GRAY}${ARROW}${FG_WHITE} %s ${RESET}${THINK_FG_NEXT}${ARROW}${RESET}\n" "$MODEL" "$CC_VERSION" "$THINK"
+# Row 2: MODEL | Version | Thinking  (stacks when narrow)
+flex_segments \
+    "$BG_CYAN"   "$FG_CYAN"       "MODEL" "$MODEL" \
+    "$BG_GRAY"   "$FG_GRAY"       ""      "v$CC_VERSION" \
+    "$THINK_BG"  "$THINK_FG_NEXT" ""      "$THINK"
 
 # Row 2.5: AGENT — only shown when an agent/task is actively running
 AF="$HOME/.claude/temp/.agent_activity_${SESSION_ID}.json"
@@ -391,23 +563,23 @@ if [ -f "$AF" ]; then
     print_row "\033[48;5;208m" "\033[38;5;208m" "AGENT" "${AGENT_DESC}  ${AGENT_TIME}"
 fi
 
-# Row 3: CTX
-printf "${BG_YELLOW}${FG_WHITE}${BOLD} CTX ${RESET}${BG_YELLOW}${FG_WHITE} %s ${RESET}${BG_BLUE}${FG_YELLOW}${ARROW}${FG_WHITE} %s%% used ${RESET}${BG_CTX_LEFT}${FG_BLUE}${ARROW}${FG_BLACK} %s%% left ${RESET}${FG_CTX_LEFT}${ARROW}${RESET}\n" "$TOKENS_DISPLAY" "$PERCENT" "$PERCENT_REMAINING"
+# Row 3: CTX  (stacks when narrow)
+flex_segments \
+    "$BG_YELLOW"    "$FG_YELLOW"    "CTX" "$TOKENS_DISPLAY" \
+    "$BG_BLUE"      "$FG_BLUE"      ""    "${PERCENT}% used" \
+    "$BG_CTX_LEFT"  "$FG_CTX_LEFT"  ""    "${PERCENT_REMAINING}% left"
 
-# Row 4: CC%
-printf "${BG_PURPLE}${FG_WHITE}${BOLD} CC%% ${RESET}${BG_PURPLE}${FG_WHITE} %s ${RESET}${BG_TEAL}${FG_PURPLE}${ARROW}${FG_WHITE} %s%% used ${RESET}${BG_LIME}${FG_TEAL}${ARROW}${FG_WHITE} %s%% left ${RESET}${FG_LIME}${ARROW}${RESET}\n" "$RAW_TOKENS_DISPLAY" "${CC_PERCENT_USED:-0}" "${CC_PERCENT_LEFT:-0}"
+# Row 5.5: USAGE | WK XX% → API$ $X.XX  (stacks when narrow)
+flex_segments \
+    "$BG_USAGE" "$FG_USAGE" "USAGE" "$WEEKLY_COST_DISPLAY" \
+    "$BG_MTHS"  "$FG_MTHS"  "API\$" "$MONTHLY_COST_DISPLAY"
 
-# Row 5: SES
-printf "${BG_SLATE}${FG_WHITE}${BOLD} SES ${RESET}${BG_SLATE}${FG_WHITE} %s ${RESET}${BG_STEEL}${FG_SLATE}${ARROW}${FG_WHITE} %s ${RESET}${BG_SKY}${FG_STEEL}${ARROW}${FG_BLACK} %sm %ss API ${RESET}${FG_SKY}${ARROW}${RESET}\n" "$SES_TOKENS_DISPLAY" "$SES_COST_DISPLAY" "${SES_MINS:-0}" "${SES_SECS:-0}"
-
-# Row 6: NAME + REPO
+# Row 6: NAME (own line — only shown when session has a name)
 BG_NAME="\033[48;5;25m"; FG_NAME="\033[38;5;25m"
-if [ -n "$SESSION_NAME" ]; then
-    printf "${BG_NAME}${FG_WHITE}${BOLD} NAME ${RESET}${BG_NAME}${FG_WHITE} %s ${RESET}${BG_FOREST}${FG_NAME}${ARROW}${FG_WHITE}${BOLD} REPO ${RESET}" "$SESSION_NAME"
-else
-    printf "${BG_FOREST}${FG_WHITE}${BOLD} REPO ${RESET}"
-fi
-printf "${BG_FOREST}${FG_WHITE} %s ${RESET}${FG_FOREST}${ARROW}${RESET}\n" "$GITHUB_REPO_NAME"
+[ -n "$SESSION_NAME" ] && print_row "$BG_NAME" "$FG_NAME" "NAME" "$SESSION_NAME"
+
+# Row 6.5: REPO (own line — always shown)
+print_row "$BG_FOREST" "$FG_FOREST" "REPO" "$GITHUB_REPO_NAME"
 
 # Row 7: CLONE (own line)
 # Row 8: ID (own line — UUID is long, splitting prevents truncation on narrow terminals)
@@ -427,6 +599,55 @@ print_row "$BG_GUIDE_R" "$FG_GUIDE_R" "GUIDE" "$GUIDE_TEXT"
 # Row 12: LEARN
 print_row "$BG_LEARN_R" "$FG_LEARN_R" "LEARN" "$LEARN_TEXT"
 
+# Row 13: LIMITS (API rate limits — stacks req/tok when narrow)
+[ "$LIMITS_TEXT" != "none" ] && flex_segments \
+    "$BG_LIMITS_R" "$FG_LIMITS_R" "LIMITS" "$LIMITS_REQ_TEXT" \
+    "$BG_LIMITS_R" "$FG_LIMITS_R" ""       "$LIMITS_TOK_TEXT"
+
+# ========== API LIMITS REFRESH (background, throttled to once per 10 min) ==========
+# Fetches anthropic-ratelimit-* headers from a cheap HEAD call to api.anthropic.com.
+# Uses ANTHROPIC_API_KEY from env, or macOS Keychain key "anthropic_api_key".
+# Lock file prevents concurrent refreshes. Writes to ~/.claude/temp/.api_limits.json.
+{
+    REFRESH_LOCK="$HOME/.claude/temp/.api_limits_refresh.lock"
+    # Skip if a refresh is already in progress (<30s old lock)
+    if [ -f "$REFRESH_LOCK" ]; then
+        LOCK_AGE=$(( $(date +%s) - $(/usr/bin/stat -f %m "$REFRESH_LOCK" 2>/dev/null || echo 0) ))
+        [ "$LOCK_AGE" -lt 30 ] && exit 0
+    fi
+    # Skip if cache is still fresh (<10 min)
+    if [ -f "$API_LIMITS_FILE" ]; then
+        FRESH=$(( $(date +%s) - $(/usr/bin/stat -f %m "$API_LIMITS_FILE" 2>/dev/null || echo 0) ))
+        [ "$FRESH" -lt 600 ] && exit 0
+    fi
+    touch "$REFRESH_LOCK" 2>/dev/null
+    # Resolve API key: env → Keychain "anthropic_api_key" → Keychain "ANTHROPIC_API_KEY"
+    AKEY="${ANTHROPIC_API_KEY:-}"
+    if [ -z "$AKEY" ]; then
+        AKEY=$(security find-generic-password -s "anthropic_api_key" -w 2>/dev/null || \
+               security find-generic-password -s "ANTHROPIC_API_KEY" -w 2>/dev/null || echo "")
+    fi
+    rm -f "$REFRESH_LOCK" 2>/dev/null
+    [ -z "$AKEY" ] && exit 0
+    # HEAD request — no body, just headers, minimal cost
+    HDRS=$(curl -s -I -m 10 \
+        -H "x-api-key: $AKEY" \
+        -H "anthropic-version: 2023-06-01" \
+        "https://api.anthropic.com/v1/models" 2>/dev/null)
+    [ -z "$HDRS" ] && exit 0
+    RQ_LIM=$(echo "$HDRS" | grep -i "^anthropic-ratelimit-requests-limit:"     | tr -d '\r' | awk '{print $2}')
+    RQ_REM=$(echo "$HDRS" | grep -i "^anthropic-ratelimit-requests-remaining:"  | tr -d '\r' | awk '{print $2}')
+    RT_LIM=$(echo "$HDRS" | grep -i "^anthropic-ratelimit-tokens-limit:"        | tr -d '\r' | awk '{print $2}')
+    RT_REM=$(echo "$HDRS" | grep -i "^anthropic-ratelimit-tokens-remaining:"    | tr -d '\r' | awk '{print $2}')
+    RT_RST=$(echo "$HDRS" | grep -i "^anthropic-ratelimit-tokens-reset:"        | tr -d '\r' | awk '{print $2}')
+    [ -z "$RQ_LIM" ] && exit 0
+    printf '{"timestamp":%s,"req_limit":%s,"req_remaining":%s,"tok_limit":%s,"tok_remaining":%s,"tok_reset":"%s"}\n' \
+        "$(date +%s)" \
+        "${RQ_LIM:-0}" "${RQ_REM:-0}" \
+        "${RT_LIM:-0}" "${RT_REM:-0}" \
+        "${RT_RST:-unknown}" > "$API_LIMITS_FILE" 2>/dev/null
+} &
+
 # ========== ITERM2 SYNC (write directly to parent TTY, background) ==========
 # Claude Code's TUI captures stdout — OSC sequences must bypass it via /dev/ttyNNN
 # Tab title = clone dir name, Window title = session ID, Badge = session name
@@ -439,14 +660,15 @@ print_row "$BG_LEARN_R" "$FG_LEARN_R" "LEARN" "$LEARN_TEXT"
             [ -n "$REPO_NAME" ] && [ "$REPO_NAME" != "--" ] && printf '\033]1337;SetUserVar=cloneName=%s\007' "$(printf '%s' "$REPO_NAME" | base64 | tr -d '\n')" > "$PARENT_TTY"
             [ -n "${SESSION_NAME:-}" ] && printf '\033]1337;SetUserVar=sessionBadge=%s\007' "$(printf '%s' "$SESSION_NAME" | base64 | tr -d '\n')" > "$PARENT_TTY"
             RESUME_CMD=""
-            [ -n "$REPO_NAME" ] && [ "$REPO_NAME" != "--" ] && RESUME_CMD="cd /Users/emanuelfarruda/github/open-session-clones/${REPO_NAME} && claude --resume ${SESSION_ID}"
+            [ -n "$REPO_NAME" ] && [ "$REPO_NAME" != "--" ] && RESUME_CMD="cd ${HOME}/github/open-session-clones/${REPO_NAME} && claude --resume ${SESSION_ID}"
             [ -n "$RESUME_CMD" ] && printf '\033]1337;SetUserVar=resumeCmd=%s\007' "$(printf '%s' "$RESUME_CMD" | base64 | tr -d '\n')" > "$PARENT_TTY"
         fi
     fi
-    # Always write sync file for external consumers
+    # Always write sync file for external consumers (including precompact_alert_watcher)
     if [ -n "$SESSION_ID" ]; then
         SYNC_FILE="$HOME/.claude/temp/.iterm_sync_${SESSION_ID}.json"
-        printf '{"session_id":"%s","repo_name":"%s","session_name":"%s","resume_cmd":"%s","iterm_session_id":"%s","timestamp":%s}\n' \
-            "$SESSION_ID" "${REPO_NAME:-}" "${SESSION_NAME:-}" "${RESUME_CMD:-}" "${ITERM_SESSION_ID:-}" "$(date +%s)" > "$SYNC_FILE" 2>/dev/null
+        TTY_RAW=$(ps -o tty= -p $PPID 2>/dev/null | tr -d ' ')
+        printf '{"session_id":"%s","repo_name":"%s","session_name":"%s","resume_cmd":"%s","iterm_session_id":"%s","tty":"/dev/%s","timestamp":%s}\n' \
+            "$SESSION_ID" "${REPO_NAME:-}" "${SESSION_NAME:-}" "${RESUME_CMD:-}" "${ITERM_SESSION_ID:-}" "${TTY_RAW:-null}" "$(date +%s)" > "$SYNC_FILE" 2>/dev/null
     fi
 } &

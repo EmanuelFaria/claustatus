@@ -87,14 +87,46 @@ for the last `custom-title` entry.
 This result is cached in `/tmp/statusline-sessname-{SESSION_ID}` to avoid re-scanning
 the transcript on every render.
 
-### PASTE PRECOMPACT alert expiry
+### PRECOMPACT alert system
 
-The green "PASTE PRECOMPACT NOW" alert reads `~/.claude/temp/.precompact_ready`. It
-disappears automatically after **5 minutes** (the `READY_AGE -lt 300` check). When it
-expires, the file is deleted. This gives you time to copy and paste the precompact output
-without the alert lingering forever.
+Three flag files drive the two precompact alerts:
 
-To dismiss it early: `rm ~/.claude/temp/.precompact_ready`
+| File | Created by | Meaning |
+|------|-----------|---------|
+| `~/.claude/temp/.precompact_running` | `/precompact` script / PreCompact hook start | Extraction in progress — suppress PRECOMPACT NOW |
+| `~/.claude/temp/.precompact_ready` | `/precompact` script / PreCompact hook end | Output ready — show PASTE PRECOMPACT NOW |
+
+**PRECOMPACT NOW** (`≤15% remaining`) is suppressed while `.precompact_running` exists and is <2 minutes old. The flag auto-expires so a crashed script can't suppress the alert forever.
+
+**PASTE PRECOMPACT NOW** reads `~/.claude/temp/.precompact_ready`. It disappears automatically after **5 minutes** (`READY_AGE -lt 300`). When it expires, the file is deleted.
+
+**Two-row alternating display:** Both alerts render as two rows that swap positions on alternating seconds (`$(date +%S) % 2`). This creates a visible flash without relying on ANSI blink, which Claude Code's TUI strips.
+
+**Flag clearance before recursion guard:** `precompact_state_snapshot.sh` (PreCompact hook) deletes both `.precompact_ready` and `.precompact_running` as its very first action — before the recursion guard runs. This guarantees the PASTE PRECOMPACT NOW alert clears even if the hook exits early due to a re-entrant call.
+
+To dismiss early:
+```bash
+rm ~/.claude/temp/.precompact_ready
+rm ~/.claude/temp/.precompact_running
+```
+
+The threshold for PRECOMPACT NOW is `PERCENT_REMAINING -le 15` (previously 20 — lowered to give more working context before the alert fires).
+
+### precompact_alert_watcher.py
+
+`~/.claude/scripts/precompact_alert_watcher.py` is a background daemon (LaunchAgent: `com.personalos.precompact-alert-watcher`) that watches the same flag files and fires system-level alerts.
+
+**What it does on trigger:**
+
+1. **macOS notification** — `osascript` banner. Title is "PRECOMPACT NOW" or "PASTE PRECOMPACT NOW". Body includes the window number, e.g. "window 19 — RANDOM REQUESTS".
+2. **iTerm2 tab flash** — writes ANSI red background + reset to the TTY path recorded in `.iterm_sync_{SID}.json`. Red for 2 seconds, then reset.
+3. **Dock bounce** — bounces the iTerm2 dock icon via `osascript`.
+
+**TTY flash mechanism:** `statusline.sh` writes `"tty":"/dev/ttysNNN"` into each `.iterm_sync_{SID}.json`. The watcher reads all sync files, finds any with an active alert, and writes escape codes directly to the stored TTY path. This bypasses the iTerm2 Python API and works even when `statusline_title_sync.py` is not running.
+
+**Window number extraction:** The watcher parses the `iterm_session_id` field in `.iterm_sync_{SID}.json`. Format is `w{N}t{M}p{L}:{UUID}` — the window number in the notification is `N+1` (1-based display).
+
+**Polling:** Every 5 seconds. 2-minute cooldown per alert type between repeat notifications to avoid notification storms during a long low-context session.
 
 ## statusline_title_sync.py
 
@@ -119,6 +151,39 @@ wrong session. Method 1-3 are unambiguous.
 handles profile change events — re-applying titles when you switch profiles, which
 would otherwise clear user-set titles.
 
+## MTHS Monthly Cost Delta-Accumulation
+
+The statusline renders many times per session. `SES_COST` is a **cumulative session total** — if you just add it to a monthly file on every render, you triple-count it. The MTHS row uses a delta pattern instead:
+
+```
+delta = SES_COST - last_seen_cost_for_this_session
+monthly_total += delta
+last_seen_cost_for_this_session = SES_COST
+```
+
+Files:
+- `~/.claude/temp/.ses_last_{SESSION_ID}` — per-session "last seen" cost (float, 4dp)
+- `~/.claude/temp/.monthly_cost_YYYY-MM` — monthly accumulator; new file = new month = auto-reset
+
+All file I/O is in a single `awk BEGIN` block to avoid spawning multiple subprocesses. The block reads both files, computes the delta, updates both files, and prints the new total — all atomically within awk.
+
+Edge cases handled:
+- Session cost decreases (model switch resets session): delta clamped to 0
+- File doesn't exist yet: defaults to 0
+- `SESSION_ID` empty: entire block is skipped (statusline running in test mode)
+
+## LIMITS Background Refresh
+
+`~/.claude/temp/.api_limits.json` is written by a background subshell at the bottom of `statusline.sh`. The subshell:
+
+1. Checks a lock file (`~/.claude/temp/.api_limits_refresh.lock`) — exits if <30s old
+2. Checks the cache file — exits if <10 min old
+3. Resolves `ANTHROPIC_API_KEY` from environment, then `security find-generic-password`
+4. Issues `curl -I` HEAD request (no body, minimal cost)
+5. Parses `anthropic-ratelimit-*` headers and writes JSON
+
+The key is resolved inside the background subshell — the main render path never blocks on Keychain access.
+
 ## Adding a New Row
 
 1. Decide on a route file name: `~/.claude/temp/.myrow_route_{SID}.json`
@@ -132,16 +197,18 @@ would otherwise clear user-set titles.
 
 ## Content Wrapping (print_row)
 
-Long content is wrapped automatically at 42 characters (matching MODEL row width):
+Long content is wrapped automatically at 34 characters (matching the CLONE row width):
 
 ```bash
 print_row "$BG_COLOR" "$FG_COLOR" "LABEL" "$content"
 ```
 
-- Content ≤ 42 chars: single line
-- Content > 42 chars: wraps at last word boundary before 42, continuation on second line
+- Content ≤ 34 chars: single line
+- Content > 34 chars: wraps at last word boundary before 34, continuation on second line
 
-GUIDE, SKILL, INTENT, LEARN, and AGENT all use `print_row`. Fixed-layout rows (MODEL, CTX, CC%, SES) do not — they have fixed-width multi-segment designs.
+GUIDE, SKILL, INTENT, LEARN, AGENT, NAME, REPO, MTHS, and LIMITS all use `print_row`. The MODEL and CTX rows do not — they have fixed-width multi-segment designs.
+
+To change the wrap width, update `MAX_ROW_CONTENT` near the top of `statusline.sh`.
 
 ## AGENT Row
 
@@ -166,7 +233,7 @@ Elapsed time is calculated fresh on each render — the incrementing timer signa
 
 ## Conditional Rows
 
-These rows only appear when active (hidden entirely when "none"):
+These rows only appear when active (hidden entirely when inactive):
 
 | Row | Shows when |
 |-----|-----------|
@@ -174,3 +241,6 @@ These rows only appear when active (hidden entirely when "none"):
 | SKILL | Skill loaded, offered, or declined |
 | INTENT | Capability routing matched |
 | NAME | Session has been renamed via `/rename` |
+| LIMITS | `~/.claude/temp/.api_limits.json` exists and is <20 min old |
+
+Always-on rows: MODEL, CTX, MTHS, REPO, CLONE, ID, GUIDE, LEARN.

@@ -17,7 +17,14 @@ Claude Code API response
         │
         ├── Activity: ~/.claude/temp/.current_activity.json
         │
-        └── printf: 12-15 powerline rows → stdout (Claude Code renders these)
+        ├── Monthly cost: ~/.claude/temp/.monthly_cost_YYYY-MM  (delta-accumulation)
+        │   └── Per-session last-seen: ~/.claude/temp/.ses_last_{SID}
+        │
+        ├── API limits cache: ~/.claude/temp/.api_limits.json  (refreshed every 10 min)
+        │
+        ├── Precompact flags: ~/.claude/temp/.precompact_{running,ready}
+        │
+        └── printf: 11-15 powerline rows → stdout (Claude Code renders these)
                 │
                 └── Background: /dev/ttysNNN (parent TTY)
                     ├── SetUserVar=cloneName
@@ -28,6 +35,7 @@ iTerm2 (statusline_title_sync.py — runs every 5s)
         │
         ├── Reads: ~/.claude/temp/.iterm_sync_{SID}.json
         │   (written by statusline.sh background section)
+        │   Fields: clone_name, session_name, iterm_session_id, tty (/dev/ttysNNN)
         │
         ├── Matches iTerm2 sessions to Claude sessions via iterm_session_id
         │
@@ -36,6 +44,19 @@ iTerm2 (statusline_title_sync.py — runs every 5s)
             ├── window.async_set_title(session_name)  — /rename name (NOT uuid)
             ├── session.async_set_variable("user.sessionBadge", session_name)
             └── session.async_set_name(claude_uuid)   — Session Name field = UUID
+
+precompact_alert_watcher.py (LaunchAgent: com.personalos.precompact-alert-watcher — runs every 5s)
+        │
+        ├── Reads: ~/.claude/temp/.precompact_{running,ready}  (alert state)
+        ├── Reads: ~/.claude/temp/.iterm_sync_{SID}.json       (tty + iterm_session_id)
+        │
+        ├── On alert trigger:
+        │   ├── macOS notification (osascript) — title=alert type, body="window N — session name"
+        │   │   Window number extracted from iterm_session_id: w{N}t{M}p{L}:{UUID} → N+1
+        │   ├── iTerm2 tab flash — writes ANSI red to tty for 2s, then reset
+        │   └── Dock bounce — osascript bounces iTerm2 dock icon
+        │
+        └── 2-minute cooldown between repeat notifications per alert type
 ```
 
 ## Key Design Decisions
@@ -72,6 +93,8 @@ Target: <50ms total execution.
 
 - Single `jq` call for all JSON extraction
 - No subprocesses for route file reads (`$(<file)` bash built-in)
+- Monthly cost math: single `awk BEGIN` block with file I/O — no Python startup
 - Git remote lookup: 30-second cache in `/tmp`
 - Session name lookup: cached in `/tmp/statusline-sessname-{SID}`
+- API limits refresh: background subshell (`&`), throttled to once per 10 min
 - iTerm2 sync: background subshell (`&`) — doesn't block rendering

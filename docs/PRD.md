@@ -101,6 +101,7 @@ statusline_title_sync.py  (iTerm2 AutoLaunch Script)
 | `~/.claude/temp/.{guide,skill,intent,learn}_route_{SID}.json` | Hook route files |
 | `~/.claude/temp/.agent_activity_{SID}.json` | Agent state |
 | `~/.claude/temp/.precompact_ready` | Precompact alert trigger |
+| `~/.claude/temp/.usage_caps.json` | Rolling 5h/7d cap cache |
 | `~/.claude/temp/.iterm_sync_script.log` | Sync script debug log |
 | `~/.claude/settings.json` | Claude Code config (statusLine hook) |
 
@@ -126,6 +127,7 @@ statusline_title_sync.py  (iTerm2 AutoLaunch Script)
 | Row | Trigger | Color |
 |---|---|---|
 | AGENT | `.agent_activity_{SID}.json` exists and has description | Orange BG |
+| CAP | `.usage_caps.json` exists and < 2h old | Green/amber/red by max(5h, 7d) |
 | PRECOMPACT NOW | `context_remaining ≤ 15%` (≤20% shows amber warning) | Animated red/yellow |
 | PASTE PRECOMPACT | `.precompact_ready` file < 5 min old | Animated green |
 

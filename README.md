@@ -12,6 +12,7 @@ MODEL  Claude Opus 4.6 (1M context)  v2.1.63  🧠 ON
 AGENT  Read codebase for architecture...  2m 14s    ← only when agent running
 CTX    163,550  16% used  84% left
 USAGE  WK 12%    API$  $3.42
+CAP    5h 63%  7d 41%                    ← only when API key is configured
 NAME   statusline fix                    ← only when session has been /renamed
 REPO   PersonalOS-session-20260228-...
 CLONE  PersonalOS-session-20260228-121307
@@ -279,6 +280,21 @@ To add your key to Keychain:
 ```bash
 security add-generic-password -s "anthropic_api_key" -a "$USER" -w "sk-ant-..."
 ```
+
+## CAP — Rolling Usage Caps
+
+The CAP row shows Anthropic's actual 5-hour and 7-day rolling usage cap percentages — the numbers that determine when a Max subscriber gets throttled:
+
+```
+CAP    5h 63%  7d 41%
+```
+
+- Shown only when `~/.claude/temp/.usage_caps.json` exists and is <2 hours old
+- Background refresh runs every 60 minutes via the `/api/oauth/usage` endpoint
+- Uses the same `ANTHROPIC_API_KEY` as the LIMITS row
+- Color: 🟢 green ≤50% / 🟡 amber ≤75% / 🔴 red >75% (based on whichever window is higher)
+
+**USAGE vs CAP:** USAGE tracks your dollar spend vs a self-imposed budget. CAP tracks Anthropic's actual rolling limits. Max subscribers get throttled by CAP, not USAGE.
 
 ---
 

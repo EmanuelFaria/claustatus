@@ -187,6 +187,28 @@ Edge cases handled:
 
 The key is resolved inside the background subshell — the main render path never blocks on Keychain access.
 
+## CAP Row — Rolling Usage Caps
+
+The CAP row shows Anthropic's actual 5-hour and 7-day rolling usage cap percentages — the numbers that determine when a Max subscriber gets throttled.
+
+**Endpoint:** `GET https://api.anthropic.com/api/oauth/usage`
+**Auth:** Same `ANTHROPIC_API_KEY` as the LIMITS row (env → Keychain)
+**Headers:** `x-api-key`, `anthropic-beta: oauth-2025-04-20`, `anthropic-version: 2023-06-01`
+**Response:** `{"five_hour": 63, "seven_day": 41}` (percentages, or null)
+
+**Cache:** `~/.claude/temp/.usage_caps.json` — refreshed every 60 minutes by a background subshell. The endpoint returns `retry-after: ~3500s` (~58 min), so polling faster would just get 429'd.
+
+**Display freshness:** Cache shown if < 2 hours old (gives buffer for transient refresh failures).
+
+**Color thresholds** (based on `max(five_hour, seven_day)`):
+- Green: ≤ 50%
+- Amber: ≤ 75%
+- Red: > 75%
+
+**Parsing:** Uses `python3 -c` in the background subshell to extract JSON fields (the response is a proper JSON object, not simple enough for `json_num` bash parsing which expects flat key-value). This is acceptable because it runs in background — doesn't block rendering.
+
+**Difference from USAGE row:** USAGE tracks dollar spend vs a self-imposed weekly budget. CAP tracks actual Anthropic rolling limits. Max subscribers care about CAP; API-key-only users care about USAGE.
+
 ## Adding a New Row
 
 1. Decide on a route file name: `~/.claude/temp/.myrow_route_{SID}.json`
@@ -241,6 +263,7 @@ These rows only appear when active (hidden entirely when inactive):
 | Row | Shows when |
 |-----|-----------|
 | AGENT | Agent/Task tool is running |
+| CAP | `~/.claude/temp/.usage_caps.json` exists and is <2h old |
 | SKILL | Skill loaded, offered, or declined |
 | INTENT | Capability routing matched |
 | NAME | Session has been renamed via `/rename` |

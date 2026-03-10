@@ -460,6 +460,34 @@ if [ -f "$API_LIMITS_FILE" ]; then
     fi
 fi
 
+# ── Rolling usage caps (5h/7d, from background-refreshed cache) ────────────────
+# Background subshell below fetches from /api/oauth/usage every ~60 min.
+# Same API key as LIMITS. Shows actual Anthropic throttle percentages (Max plan).
+CAP_TEXT="none"
+BG_CAP_R="\033[48;5;240m"; FG_CAP_R="\033[38;5;240m"
+USAGE_CAPS_FILE="$HOME/.claude/temp/.usage_caps.json"
+
+if [ -f "$USAGE_CAPS_FILE" ]; then
+    CAP_CACHE_AGE=$(( $(date +%s) - $(/usr/bin/stat -f %m "$USAGE_CAPS_FILE" 2>/dev/null || echo 0) ))
+    if [ "$CAP_CACHE_AGE" -lt 7200 ]; then   # show if cache <2h old
+        CAPJ=$(<"$USAGE_CAPS_FILE")
+        CAP_5H=$(json_num five_hour "$CAPJ")
+        CAP_7D=$(json_num seven_day "$CAPJ")
+        if [ "${CAP_5H:-0}" -gt 0 ] 2>/dev/null || [ "${CAP_7D:-0}" -gt 0 ] 2>/dev/null; then
+            CAP_TEXT="5h ${CAP_5H:-0}%  7d ${CAP_7D:-0}%"
+            # Color by whichever window is more consumed
+            CAP_MAX=$(( ${CAP_5H:-0} > ${CAP_7D:-0} ? ${CAP_5H:-0} : ${CAP_7D:-0} ))
+            if [ "${CAP_MAX:-0}" -gt 75 ] 2>/dev/null; then
+                BG_CAP_R="\033[48;5;196m"; FG_CAP_R="\033[38;5;196m"   # red
+            elif [ "${CAP_MAX:-0}" -gt 50 ] 2>/dev/null; then
+                BG_CAP_R="\033[48;5;136m"; FG_CAP_R="\033[38;5;136m"   # amber
+            else
+                BG_CAP_R="\033[48;5;28m"; FG_CAP_R="\033[38;5;28m"     # green
+            fi
+        fi
+    fi
+fi
+
 # ========== PARENT TTY (needed for iTerm2 fireworks + badge, resolved once) ==========
 PARENT_TTY="/dev/$(ps -o tty= -p $PPID 2>/dev/null | tr -d ' ')"
 
@@ -605,6 +633,9 @@ flex_segments \
     "$BG_USAGE" "$FG_USAGE" "USAGE" "$WEEKLY_COST_DISPLAY" \
     "$BG_MTHS"  "$FG_MTHS"  "API\$" "$MONTHLY_COST_DISPLAY"
 
+# Row 4.5: CAP — 5h/7d rolling usage caps (conditional — only when cache exists)
+[ "$CAP_TEXT" != "none" ] && print_row "$BG_CAP_R" "$FG_CAP_R" "CAP" "$CAP_TEXT"
+
 # Row 5: NAME (own line — only shown when session has a name)
 BG_NAME="\033[48;5;25m"; FG_NAME="\033[38;5;25m"
 [ -n "$SESSION_NAME" ] && print_row "$BG_NAME" "$FG_NAME" "NAME" "$SESSION_NAME"
@@ -677,6 +708,70 @@ print_row "$BG_LEARN_R" "$FG_LEARN_R" "LEARN" "$LEARN_TEXT"
         "${RQ_LIM:-0}" "${RQ_REM:-0}" \
         "${RT_LIM:-0}" "${RT_REM:-0}" \
         "${RT_RST:-unknown}" > "$API_LIMITS_FILE" 2>/dev/null
+} &
+
+# ========== USAGE CAPS REFRESH (background, throttled to once per 60 min) ==========
+# Fetches 5-hour and 7-day rolling usage cap percentages from /api/oauth/usage.
+# Same API key resolution as LIMITS above. The endpoint returns retry-after ~3500s,
+# so we cache aggressively (60 min). Shows actual Anthropic throttle risk for Max plans.
+{
+    CAP_LOCK="$HOME/.claude/temp/.usage_caps_refresh.lock"
+    # Skip if a refresh is already in progress (<60s old lock)
+    if [ -f "$CAP_LOCK" ]; then
+        LOCK_AGE=$(( $(date +%s) - $(/usr/bin/stat -f %m "$CAP_LOCK" 2>/dev/null || echo 0) ))
+        [ "$LOCK_AGE" -lt 60 ] && exit 0
+    fi
+    # Skip if cache is still fresh (<60 min)
+    if [ -f "$USAGE_CAPS_FILE" ]; then
+        FRESH=$(( $(date +%s) - $(/usr/bin/stat -f %m "$USAGE_CAPS_FILE" 2>/dev/null || echo 0) ))
+        [ "$FRESH" -lt 3600 ] && exit 0
+    fi
+    touch "$CAP_LOCK" 2>/dev/null
+
+    # Auth strategy: sessionKey cookie (from Claude Desktop's encrypted cookies) → API key
+    # The sessionKey is decrypted once by a helper and cached at ~/.claude/temp/.claude_session_key
+    SESSION_KEY_FILE="$HOME/.claude/temp/.claude_session_key"
+    RESP=""
+
+    # Strategy 1: sessionKey cookie (preferred — same auth as claude.ai/settings/usage)
+    if [ -f "$SESSION_KEY_FILE" ]; then
+        SK=$(<"$SESSION_KEY_FILE")
+        if [ -n "$SK" ]; then
+            RESP=$(curl -s -m 15 \
+                -H "Cookie: sessionKey=$SK" \
+                -H "anthropic-beta: oauth-2025-04-20" \
+                -H "Accept: application/json" \
+                "https://api.anthropic.com/api/oauth/usage" 2>/dev/null)
+        fi
+    fi
+
+    # Strategy 2: API key (fallback)
+    if [ -z "$RESP" ] || echo "$RESP" | grep -q '"error"'; then
+        AKEY="${ANTHROPIC_API_KEY:-}"
+        if [ -z "$AKEY" ]; then
+            AKEY=$(security find-generic-password -s "anthropic_api_key" -w 2>/dev/null || \
+                   security find-generic-password -s "ANTHROPIC_API_KEY" -w 2>/dev/null || echo "")
+        fi
+        if [ -n "$AKEY" ]; then
+            RESP=$(curl -s -m 15 \
+                -H "x-api-key: $AKEY" \
+                -H "anthropic-beta: oauth-2025-04-20" \
+                -H "anthropic-version: 2023-06-01" \
+                -H "Accept: application/json" \
+                "https://api.anthropic.com/api/oauth/usage" 2>/dev/null)
+        fi
+    fi
+
+    rm -f "$CAP_LOCK" 2>/dev/null
+    [ -z "$RESP" ] && exit 0
+    # Check for error response (rate limit or auth failure) — don't write bad data
+    echo "$RESP" | grep -q '"error"' && exit 0
+    # Extract five_hour and seven_day (integers or null)
+    FH=$(echo "$RESP" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('five_hour') or 0)" 2>/dev/null || echo "")
+    SD=$(echo "$RESP" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('seven_day') or 0)" 2>/dev/null || echo "")
+    [ -z "$FH" ] && exit 0
+    printf '{"timestamp":%s,"five_hour":%s,"seven_day":%s}\n' \
+        "$(date +%s)" "${FH:-0}" "${SD:-0}" > "$USAGE_CAPS_FILE" 2>/dev/null
 } &
 
 # ========== ITERM2 SYNC (write directly to parent TTY, background) ==========

@@ -75,8 +75,8 @@ IFS=$'\x1f' read -r MODEL CC_VERSION PROJECT_DIR CONTEXT_SIZE \
     (.transcript_path // "")
 ] | map(tostring) | join("\u001f")')"
 
-# Per-session data file (enables multi-session consumers like precompact_alert_watcher)
-[[ -n "$SESSION_ID" ]] && echo "$INPUT" > "$HOME/.claude/temp/statusline_data_${SESSION_ID}.json" 2>/dev/null &
+# Per-session data file — written AFTER percentage computation (see below, line ~140)
+# so that overhead-aware PERCENT_REMAINING is included for the watcher daemon.
 
 # ========== COMPUTED VALUES (pure bash, no subprocesses) ==========
 
@@ -134,6 +134,14 @@ else
     PERCENT=0
 fi
 PERCENT_REMAINING=$((100 - PERCENT))
+
+# Per-session data file: augment Claude Code's JSON with overhead-aware percentages.
+# The watcher daemon and hooks read this file — they need the computed values, not raw CC%.
+if [[ -n "$SESSION_ID" ]]; then
+    echo "$INPUT" | jq -c --argjson pct_used "$PERCENT" --argjson pct_left "$PERCENT_REMAINING" \
+        '.context_window.used_percentage = $pct_used | .context_window.remaining_percentage = $pct_left' \
+        > "$HOME/.claude/temp/statusline_data_${SESSION_ID}.json" 2>/dev/null &
+fi
 
 # Session tokens and cost (SES_COST is float — use printf, not arithmetic)
 # SES_COST may have trailing tab from read; strip it
@@ -515,10 +523,11 @@ if [ "$PRECOMPACT_READY" = true ]; then
         printf "\033[48;5;22m\033[92m\033[1m 🔔🔔  PASTE PRECOMPACT NOW  🔔🔔 \033[0m\n"
         printf "\033[42m\033[97m\033[1m 🔔🔔  PASTE PRECOMPACT NOW  🔔🔔 \033[0m\n"
     fi
-elif [ "$PRECOMPACT_RUNNING" = false ] && [ "${CC_PERCENT_LEFT:-100}" -le 20 ] 2>/dev/null && [ "${CC_PERCENT_LEFT:-100}" -gt 0 ] 2>/dev/null; then
+elif [ "$PRECOMPACT_RUNNING" = false ] && [ "${PERCENT_REMAINING:-100}" -le 20 ] 2>/dev/null && [ "${PERCENT_REMAINING:-100}" -gt 0 ] 2>/dev/null; then
     # Two-tier alert (per statusline_architecture.md):
     #   ≤20%: write sentinel (AI sees "wrap up" via PostToolUse hook) + visual banner
     #   ≤15%: full alert — sound, fireworks, Pushover (via watcher daemon)
+    # Uses PERCENT_REMAINING (overhead-aware), NOT CC_PERCENT_LEFT (Claude Code's raw %).
 
     # Sentinel file: written at ≤20% so PostToolUse hook injects "wrap up" into AI conversation
     if [ -n "$SESSION_ID" ]; then
@@ -530,11 +539,11 @@ elif [ "$PRECOMPACT_RUNNING" = false ] && [ "${CC_PERCENT_LEFT:-100}" -le 20 ] 2
                 _W_NUM="${_W_PART#w}"
                 ITERM_WIN="window $(( _W_NUM + 1 ))" 2>/dev/null || true
             fi
-            printf '%s' "${CC_PERCENT_LEFT}% context left in ${ITERM_WIN} (${SESSION_NAME:-${REPO_NAME:-session}})" > "$SENTINEL_FILE" 2>/dev/null
+            printf '%s' "${PERCENT_REMAINING}% context left in ${ITERM_WIN} (${SESSION_NAME:-${REPO_NAME:-session}})" > "$SENTINEL_FILE" 2>/dev/null
         fi
     fi
 
-    if [ "${CC_PERCENT_LEFT:-100}" -le 15 ] 2>/dev/null; then
+    if [ "${PERCENT_REMAINING:-100}" -le 15 ] 2>/dev/null; then
         # ≤15%: PRECOMPACT NOW — full alert with sound, fireworks, flashing banner
         if [ "$BLINK_STATE" -eq 0 ]; then
             printf "\033[41m\033[93m\033[1m 🚨🚨🚨  PRECOMPACT NOW!  🚨🚨🚨 \033[0m\n"

@@ -15,7 +15,7 @@ In **Settings > Profiles**, for each profile you use with Claude Code:
 - **Custom Window Title**: `\(user.sessionBadge)`
 
 ### Text tab
-- ✅ **"Blinking text allowed"** — required for the PRECOMPACT NOW animated alerts
+- ✅ **"Blinking text allowed"** — optional (PRECOMPACT alerts use row-swap animation, not ANSI blink)
 
 ## Dynamic Profile (Automated)
 

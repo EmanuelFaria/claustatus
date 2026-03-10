@@ -89,28 +89,33 @@ the transcript on every render.
 
 ### PRECOMPACT alert system
 
-Three flag files drive the two precompact alerts:
+Per-session flag files drive the precompact alerts (global fallback only when SESSION_ID is empty):
 
 | File | Created by | Meaning |
 |------|-----------|---------|
-| `~/.claude/temp/.precompact_running` | `/precompact` script / PreCompact hook start | Extraction in progress — suppress PRECOMPACT NOW |
-| `~/.claude/temp/.precompact_ready` | `/precompact` script / PreCompact hook end | Output ready — show PASTE PRECOMPACT NOW |
+| `.precompact_running_{SID}` | Watcher daemon / PreCompact hook start | Extraction in progress — suppress PRECOMPACT NOW |
+| `.precompact_ready_{SID}` | Watcher daemon / PreCompact hook end | Output ready — show PASTE PRECOMPACT NOW |
+| `.precompact_needed_{SID}` | statusline.sh (≤20% remaining) | Sentinel for PostToolUse AI injection |
+| `.precompact_extracted_{SID}` | Watcher daemon / PreCompact hook | Hysteresis — prevents re-trigger until >20% |
+| `.precompact_alerted_{SID}` | statusline.sh (≤15% remaining) | One-shot sound/fireworks guard |
 
-**PRECOMPACT NOW** (`≤15% remaining`) is suppressed while `.precompact_running` exists and is <2 minutes old. The flag auto-expires so a crashed script can't suppress the alert forever.
+**Two-tier alert system** (uses overhead-aware `PERCENT_REMAINING`, not Claude Code's raw `remaining_percentage`):
+- **≤20%:** Amber banner ("CONTEXT LOW — WRAP UP"), sentinel written for PostToolUse AI injection
+- **≤15%:** Red flashing banner ("PRECOMPACT NOW!"), one-shot Sosumi sound + iTerm2 fireworks
 
-**PASTE PRECOMPACT NOW** reads `~/.claude/temp/.precompact_ready`. It disappears automatically after **5 minutes** (`READY_AGE -lt 300`). When it expires, the file is deleted.
+**PRECOMPACT NOW** is suppressed while `.precompact_running_{SID}` exists and is <2 minutes old. The flag auto-expires so a crashed script can't suppress the alert forever.
+
+**PASTE PRECOMPACT NOW** reads `.precompact_ready_{SID}`. It disappears automatically after **5 minutes** (`READY_AGE -lt 300`). When it expires, the file is deleted.
 
 **Two-row alternating display:** Both alerts render as two rows that swap positions on alternating seconds (`$(date +%S) % 2`). This creates a visible flash without relying on ANSI blink, which Claude Code's TUI strips.
 
-**Flag clearance before recursion guard:** `precompact_state_snapshot.sh` (PreCompact hook) deletes both `.precompact_ready` and `.precompact_running` as its very first action — before the recursion guard runs. This guarantees the PASTE PRECOMPACT NOW alert clears even if the hook exits early due to a re-entrant call.
+**Hysteresis:** After compact/auto-compact, stale statusline data may still show ≤15%. The `.precompact_extracted_{SID}` marker prevents the watcher from re-triggering extraction. Cleared when context rises above 20%.
 
 To dismiss early:
 ```bash
-rm ~/.claude/temp/.precompact_ready
-rm ~/.claude/temp/.precompact_running
+rm ~/.claude/temp/.precompact_ready_${SESSION_ID}
+rm ~/.claude/temp/.precompact_running_${SESSION_ID}
 ```
-
-The threshold for PRECOMPACT NOW is `PERCENT_REMAINING -le 15` (previously 20 — lowered to give more working context before the alert fires).
 
 ### precompact_alert_watcher.py
 
@@ -132,16 +137,14 @@ The threshold for PRECOMPACT NOW is `PERCENT_REMAINING -le 15` (previously 20 �
 
 ### Session matching strategy
 
-The script tries four methods to match an iTerm2 session to a Claude session, in
+The script tries three methods to match an iTerm2 session to a Claude session, in
 priority order:
 
 1. **Direct match** — `iterm_session_id` in the sync file matches iTerm2's `session.session_id` (1:1, most reliable)
-2. **Cached mapping** — previous successful match saved in `_applied` dict
-3. **User variable** — `user.sessionId` we previously set (survives profile changes)
-4. **Tab title fallback** — tab title matches `repo_name` in sync files (ambiguous, last resort)
+2. **Cached mapping** — previous successful match saved in `_applied` dict, valid only if sync file < 30 min old
+3. **User variable** — `user.sessionId` we previously set (survives profile changes), same 30-min recency check
 
-If you have multiple Claude sessions in the same repository, method 4 can match the
-wrong session. Method 1-3 are unambiguous.
+Tab title fallback was removed — matching by repo directory name caused wrong badges to bleed across windows when multiple sessions shared the same repo.
 
 ### Why the sync script sets tab title via Python API instead of escape codes
 
@@ -151,9 +154,9 @@ wrong session. Method 1-3 are unambiguous.
 handles profile change events — re-applying titles when you switch profiles, which
 would otherwise clear user-set titles.
 
-## MTHS Monthly Cost Delta-Accumulation
+## USAGE / API$ Cost Delta-Accumulation
 
-The statusline renders many times per session. `SES_COST` is a **cumulative session total** — if you just add it to a monthly file on every render, you triple-count it. The MTHS row uses a delta pattern instead:
+The statusline renders many times per session. `SES_COST` is a **cumulative session total** — if you just add it to a monthly file on every render, you triple-count it. The USAGE and API$ rows use a delta pattern instead:
 
 ```
 delta = SES_COST - last_seen_cost_for_this_session
@@ -243,4 +246,4 @@ These rows only appear when active (hidden entirely when inactive):
 | NAME | Session has been renamed via `/rename` |
 | LIMITS | `~/.claude/temp/.api_limits.json` exists and is <20 min old |
 
-Always-on rows: MODEL, CTX, MTHS, REPO, CLONE, ID, GUIDE, LEARN.
+Always-on rows: Activity, MODEL, CTX, USAGE, API$, REPO, CLONE, ID, GUIDE, LEARN.

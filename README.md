@@ -11,7 +11,7 @@ A rich, real-time powerline-style status bar for [Claude Code](https://claude.ai
 MODEL  Claude Opus 4.6 (1M context)  v2.1.63  🧠 ON
 AGENT  Read codebase for architecture...  2m 14s    ← only when agent running
 CTX    163,550  16% used  84% left
-MTHS   $3.42  3/2026
+USAGE  WK 12%    API$  $3.42
 NAME   statusline fix                    ← only when session has been /renamed
 REPO   PersonalOS-session-20260228-...
 CLONE  PersonalOS-session-20260228-121307
@@ -30,7 +30,7 @@ Plus conditional alerts:
 ## Features
 
 - **Real-time context tracking** — tokens used, percentage remaining
-- **Monthly cost tracking** — MTHS row accumulates API spend across all sessions; auto-resets each month
+- **Cost tracking** — USAGE row shows weekly budget %, API$ row shows monthly total; both auto-reset
 - **API rate limits** — LIMITS row shows requests and tokens remaining per minute (requires `ANTHROPIC_API_KEY`)
 - **Model awareness** — shows model name, version, thinking on/off state
 - **Session identity** — session name (from `/rename`), repo name, clone directory, UUID
@@ -158,7 +158,7 @@ Configure each profile you use with Claude Code.
 | General | Badge | `\(user.sessionBadge)` |
 | Window | Custom Tab Title | `\(user.cloneName)` |
 | Window | Custom Window Title | `\(user.sessionBadge)` |
-| Text | Blinking text allowed | ✅ checked (for PRECOMPACT alerts) |
+| Text | Blinking text allowed | ✅ checked (optional — alerts use row-swap, not blink) |
 
 **Via Dynamic Profiles** (`~/Library/Application Support/iTerm2/DynamicProfiles/yourprofile.json`):
 
@@ -243,18 +243,22 @@ Source: your `UserPromptSubmit` hook queries a database of past learnings by key
 
 ---
 
-## MTHS — Monthly Cost Tracking
+## USAGE / API$ — Cost Tracking
 
-The MTHS (MontHS) row shows accumulated API spend across all sessions for the current month.
+Two rows track API spend:
 
 ```
-MTHS   $3.42  3/2026
+USAGE  WK 12%    API$  $3.42
 ```
 
-- Tracks the **delta** between each render's session cost and the previous render, adding only new spend
-- Per-session "last seen" file (`~/.claude/temp/.ses_last_{SID}`) prevents double-counting across renders
-- Monthly total stored in `~/.claude/temp/.monthly_cost_YYYY-MM` — auto-resets on the first of each month
-- Color: 🟢 green under $10 / 🟡 amber $10–$50 / 🔴 red $50+
+**USAGE** — Weekly percentage of a configurable budget (default $100/week, override: `export WEEKLY_BUDGET_USD=50`).
+- Color: 🟢 blue default / 🟡 yellow ≥50% / 🟠 orange ≥75% / 🔴 red ≥90%
+
+**API$** — Monthly total accumulated across all sessions.
+- Color: 🟢 teal default / 🟠 orange ≥$10 / 🔴 red ≥$50
+- Auto-resets on the first of each month
+
+Both track the **delta** between each render's session cost and the previous render, adding only new spend. Per-session "last seen" file (`~/.claude/temp/.ses_last_{SID}`) prevents double-counting. All file I/O in a single `awk BEGIN` block for performance.
 
 This tracks **direct API costs only**, not Claude Max subscription fees.
 
@@ -325,14 +329,14 @@ The `.precompact_running` flag expires automatically after 2 minutes if not remo
 - **macOS only** in current form (uses BSD `stat`, macOS paths). Linux port needs minor changes.
 - **iTerm2 only** for tab/window/badge sync. PRs welcome for other terminals.
 - The `/model` switch in Claude Code resets some data between renders — handled gracefully.
-- **Blink animation** requires iTerm2's "Blinking text allowed" setting.
+- **Flash animation** uses row-swap on each render (ANSI blink is stripped by Claude Code's TUI).
 - `statusline_title_sync.py` must be launched from the Scripts menu — not from a terminal shell.
 
 ## How It Works
 
 Claude Code calls the statusline script on every API response, piping a JSON blob with session data to stdin. The script:
 
-1. **Single `jq` call** — extracts all 16 fields at once using Unit Separator (`\x1f`) to avoid bash's whitespace-collapsing IFS behavior
+1. **Single `jq` call** — extracts all 15 fields at once using Unit Separator (`\x1f`) to avoid bash's whitespace-collapsing IFS behavior
 2. **Pure bash computation** — token math, percentages, string formatting
 3. **Route file reads** — session-specific JSON files written by hooks
 4. **Printf output** — all rows using 16-color ANSI codes (compatible with iTerm2's TUI)

@@ -157,7 +157,7 @@ async def setup_profile_badges(connection) -> None:
 
 
 async def find_claude_session(
-    session, iterm_index: dict[str, dict]
+    session, iterm_index: dict[str, dict], all_sync: dict[str, dict]
 ) -> dict | None:
     """Match an iTerm2 session to Claude sync data.
 
@@ -179,7 +179,7 @@ async def find_claude_session(
     cached = _applied.get(iterm_sid, {})
     cached_claude_sid = cached.get("claude_sid")
     if cached_claude_sid:
-        sync_data = read_all_sync_files().get(cached_claude_sid)
+        sync_data = all_sync.get(cached_claude_sid)
         if sync_data and time.time() - sync_data.get("timestamp", 0) < 1800:
             return sync_data
         # Stale or missing — evict the cache entry so it doesn't keep matching wrong session
@@ -190,7 +190,6 @@ async def find_claude_session(
         user_sid = await session.async_get_variable("user.sessionId")
         if user_sid and UUID_RE.match(str(user_sid).strip()):
             claude_sid = str(user_sid).strip()
-            all_sync = read_all_sync_files()
             if claude_sid in all_sync:
                 sync_data = all_sync[claude_sid]
                 if time.time() - sync_data.get("timestamp", 0) < 1800:
@@ -275,7 +274,7 @@ async def main(connection):
     for window in app.windows:
         for tab in window.tabs:
             for session in tab.sessions:
-                sync_data = await find_claude_session(session, iterm_index)
+                sync_data = await find_claude_session(session, iterm_index, all_sync)
                 if sync_data:
                     await apply_session_data(session, sync_data, force=True)
                     await apply_titles(session, tab, window, sync_data)
@@ -298,7 +297,7 @@ async def main(connection):
             for tab in window.tabs:
                 for session in tab.sessions:
                     if session.session_id == changed_iterm_sid:
-                        sync_data = await find_claude_session(session, iterm_idx)
+                        sync_data = await find_claude_session(session, iterm_idx, all_sync_now)
                         if sync_data:
                             await apply_titles(session, tab, window, sync_data)
                             await apply_session_data(session, sync_data, force=True)
@@ -350,7 +349,7 @@ async def main(connection):
                 for tab in window.tabs:
                     for session in tab.sessions:
                         sync_data = await find_claude_session(
-                            session, iterm_index
+                            session, iterm_index, all_sync
                         )
                         if sync_data:
                             await apply_session_data(session, sync_data)

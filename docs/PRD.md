@@ -39,7 +39,7 @@ Claude Code API response
         ▼ (stdin: JSON blob with session data)
   statusline.sh  (~/.claude/scripts/statusline.sh)
         │
-        ├── jq: extract 16 fields via \x1f Unit Separator
+        ├── jq: extract 15 fields via \x1f Unit Separator
         │   (avoids bash IFS tab-collapse bug with empty fields)
         │
         ├── Route files: ~/.claude/temp/.{guide,skill,intent,learn}_route_{SID}.json
@@ -76,7 +76,7 @@ statusline_title_sync.py  (iTerm2 AutoLaunch Script)
 **Statusline rendering** (every API response, ~40ms):
 
 1. Claude Code pipes JSON to `statusline.sh` stdin
-2. Single `jq` call extracts 16 fields separated by `\x1f`
+2. Single `jq` call extracts 15 fields separated by `\x1f`
 3. Bash `read` splits on `\x1f` into named variables
 4. Route files read with `$(<file)` (no subprocess)
 5. Each row computed with ANSI color codes and printf
@@ -112,12 +112,13 @@ statusline_title_sync.py  (iTerm2 AutoLaunch Script)
 
 | Row | Content | Color scheme |
 |---|---|---|
-| MODEL | `{name} ({ctx_k}k context)  v{version}  {thinking_indicator}` | Blue BG |
-| CTX | `{input_tokens}  {pct_used}% used  {pct_left}% left` | Dark BG |
-| CC% | `{cc_tokens}  {pct_used}% used  {pct_left}% left` | Dark BG |
-| SES | `{session_tokens}  ${cost}  {duration} API` | Dark BG |
-| NAME | `{session_name}   REPO  {repo_name}` | Teal BG |
-| CLONE | `{clone_dir_name}` | Navy BG |
+| Activity | `{icon} {detail}` | Gray/orange/blue/yellow BG |
+| MODEL | `{name}  v{version}  {thinking_indicator}` | Magenta/blue/green BG |
+| CTX | `{tokens_display}  {pct_used}% used  {pct_left}% left` | Cyan/blue/green BG |
+| USAGE | `WK {weekly_pct}%` | Blue BG (amber ≥50%, orange ≥75%, red ≥90%) |
+| API$ | `${monthly_cost}` | Teal BG (orange ≥$10, red ≥$50) |
+| REPO | `{github_repo_name}` | Green BG |
+| CLONE | `{clone_dir_name}` | Amber BG |
 | ID | `{session_uuid}` | Dark BG |
 
 ### 3.2 Conditional Rows
@@ -125,7 +126,7 @@ statusline_title_sync.py  (iTerm2 AutoLaunch Script)
 | Row | Trigger | Color |
 |---|---|---|
 | AGENT | `.agent_activity_{SID}.json` exists and has description | Orange BG |
-| PRECOMPACT NOW | `context_remaining ≤ 20%` | Animated red/yellow |
+| PRECOMPACT NOW | `context_remaining ≤ 15%` (≤20% shows amber warning) | Animated red/yellow |
 | PASTE PRECOMPACT | `.precompact_ready` file < 5 min old | Animated green |
 
 ### 3.3 Route Rows (Hook-Driven)
@@ -287,7 +288,7 @@ Target: < 50ms total execution.
 
 | Technique | Saves |
 |---|---|
-| Single `jq` call for all 16 fields | ~14 subprocess forks |
+| Single `jq` call for all 15 fields | ~14 subprocess forks |
 | `$(<file)` for route file reads | Subprocess fork per file |
 | 30-second git remote cache in `/tmp` | Git network call per render |
 | Session name cache in `/tmp/statusline-sessname-{SID}` | File stat per render |
@@ -301,7 +302,7 @@ Target: < 50ms total execution.
 
 ### 8.1 Main Rows
 
-All main rows (MODEL, CTX, CC%, SES, NAME, CLONE, ID) use 16-color ANSI codes (`\033[4Xm` for backgrounds, `\033[3Xm` for foregrounds). Not 8-bit 256-color. Claude Code's TUI has rendering issues with 8-bit codes on certain model configurations causing truncation.
+All main rows (Activity, MODEL, CTX, USAGE, API$, NAME, REPO, CLONE, ID) use 16-color ANSI codes (`\033[4Xm` for backgrounds, `\033[3Xm` for foregrounds). Not 8-bit 256-color. Claude Code's TUI has rendering issues with 8-bit codes on certain model configurations causing truncation.
 
 ### 8.2 Route Rows
 
@@ -309,7 +310,7 @@ GUIDE, SKILL, INTENT, LEARN use 8-bit 256-color for more expressive state repres
 
 ### 8.3 Alert Rows
 
-PRECOMPACT NOW uses ANSI blink (`\033[5m`) + alternating red/yellow. PASTE PRECOMPACT uses green blink. Both require "Blinking text allowed" enabled in iTerm2 profile (Settings → Profiles → Text).
+PRECOMPACT NOW uses alternating red/yellow rows (swapped on even/odd seconds). PASTE PRECOMPACT uses alternating green rows. ANSI blink (`\033[5m`) is NOT used — Claude Code's TUI strips it. The flash effect comes from row-swap on each re-render.
 
 ---
 
@@ -347,7 +348,7 @@ These were explicitly considered and rejected:
 - macOS only: uses BSD `stat`, macOS TTY paths (`/dev/tty{NNN}`)
 - iTerm2 only for the Python sync component
 - `statusline_title_sync.py` must be launched from the Scripts menu
-- ANSI blink in PRECOMPACT alerts requires iTerm2's "Blinking text allowed" setting
+- PRECOMPACT alert flash uses row-swap (ANSI blink stripped by Claude Code TUI)
 - If the iTerm2 sync script is killed, it must be manually restarted via Scripts > AutoLaunch
 
 ---

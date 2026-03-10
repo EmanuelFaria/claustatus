@@ -31,13 +31,15 @@ echo "✅ Installed: $STATUSLINE"
 
 # Configure settings.json
 if [ -f "$CLAUDE_SETTINGS" ]; then
-    if python3 -c "
-import json, sys
-with open('$CLAUDE_SETTINGS') as f:
+    if SETTINGS_PATH="$CLAUDE_SETTINGS" STATUSLINE_PATH="$STATUSLINE" python3 -c "
+import json, os
+settings_path = os.environ['SETTINGS_PATH']
+statusline_path = os.environ['STATUSLINE_PATH']
+with open(settings_path) as f:
     s = json.load(f)
 if 'statusLine' not in s:
-    s['statusLine'] = {'type': 'command', 'command': '$STATUSLINE'}
-    with open('$CLAUDE_SETTINGS', 'w') as f:
+    s['statusLine'] = {'type': 'command', 'command': statusline_path}
+    with open(settings_path, 'w') as f:
         json.dump(s, f, indent=2)
     print('configured')
 else:
@@ -49,10 +51,12 @@ else:
         echo "   $STATUSLINE"
     fi
 else
-    python3 -c "
-import json
-with open('$CLAUDE_SETTINGS', 'w') as f:
-    json.dump({'statusLine': {'type': 'command', 'command': '$STATUSLINE'}}, f, indent=2)
+    SETTINGS_PATH="$CLAUDE_SETTINGS" STATUSLINE_PATH="$STATUSLINE" python3 -c "
+import json, os
+settings_path = os.environ['SETTINGS_PATH']
+statusline_path = os.environ['STATUSLINE_PATH']
+with open(settings_path, 'w') as f:
+    json.dump({'statusLine': {'type': 'command', 'command': statusline_path}}, f, indent=2)
 "
     echo "✅ Created: $CLAUDE_SETTINGS"
 fi

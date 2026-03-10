@@ -13,19 +13,20 @@ FG_BLACK="\033[30m"
 FG_WHITE="\033[97m"
 
 # ── Row: Model ───────────────────────────────────────────────────
-BG_CYAN="\033[45m"          # Model name        magenta
+# NOTE: Variable names are legacy — actual ANSI colors noted in comments
+BG_CYAN="\033[45m"          # magenta (45m)
 FG_CYAN="\033[35m"
-BG_GRAY="\033[44m"          # Version           blue
+BG_GRAY="\033[44m"          # blue (44m)
 FG_GRAY="\033[34m"
-BG_GREEN="\033[42m"         # Thinking ON       green
+BG_GREEN="\033[42m"         # green (42m) — Thinking ON
 FG_GREEN="\033[32m"
-BG_RED="\033[41m"           # Thinking OFF      red
+BG_RED="\033[41m"           # red (41m) — Thinking OFF
 FG_RED="\033[31m"
 
 # ── Row: CTX ─────────────────────────────────────────────────────
-BG_YELLOW="\033[46m"        # CTX label         cyan  (distinct from MODEL magenta)
+BG_YELLOW="\033[46m"        # cyan (46m)
 FG_YELLOW="\033[36m"
-BG_BLUE="\033[44m"          # CTX used%         blue
+BG_BLUE="\033[44m"          # blue (44m)
 FG_BLUE="\033[34m"
 BG_CTX_LEFT="\033[42m"      # CTX left%         green
 FG_CTX_LEFT="\033[32m"
@@ -53,8 +54,8 @@ echo "$INPUT" > "$HOME/.claude/temp/statusline_data.json" 2>/dev/null &
 # delimiter, losing empty fields and shifting all subsequent values.
 IFS=$'\x1f' read -r MODEL CC_VERSION PROJECT_DIR CONTEXT_SIZE \
      INPUT_TOKENS CACHE_CREATE CACHE_READ TOTAL_INPUT \
-     CC_PERCENT_USED CC_PERCENT_LEFT \
-     SES_TOTAL_INPUT SES_TOTAL_OUTPUT SES_COST SES_DURATION_MS \
+     _CC_PERCENT_USED _CC_PERCENT_LEFT \
+     _SES_TOTAL_OUTPUT SES_COST _SES_DURATION_MS \
      SESSION_ID TRANSCRIPT_PATH \
 <<< "$(echo "$INPUT" | jq -r '[
     (.model.display_name // "Unknown"),
@@ -67,7 +68,6 @@ IFS=$'\x1f' read -r MODEL CC_VERSION PROJECT_DIR CONTEXT_SIZE \
     (.context_window.total_input_tokens // 0),
     (.context_window.used_percentage // 0),
     (.context_window.remaining_percentage // 0),
-    (.context_window.total_input_tokens // 0),
     (.context_window.total_output_tokens // 0),
     (.cost.total_cost_usd // 0),
     (.cost.total_api_duration_ms // 0),
@@ -117,7 +117,6 @@ TOTAL_TOKENS=$((RAW_TOKENS + BASE_OVERHEAD))
 
 # Format tokens with commas
 TOKENS_DISPLAY=$(printf "%'d" "$TOTAL_TOKENS" 2>/dev/null || echo "$TOTAL_TOKENS")
-RAW_TOKENS_DISPLAY=$(printf "%'d" "$RAW_TOKENS" 2>/dev/null || echo "$RAW_TOKENS")
 
 # Context percentage
 CONTEXT_SIZE=${CONTEXT_SIZE:-0}
@@ -144,11 +143,12 @@ if [[ -n "$SESSION_ID" ]]; then
 fi
 
 # Session tokens and cost (SES_COST is float — use printf, not arithmetic)
-# SES_COST may have trailing tab from read; strip it
+# Strip non-numeric suffixes from SES_COST in case of malformed input
 SES_COST="${SES_COST:-0}"
 SES_COST="${SES_COST%%[^0-9.e+-]*}"
 SES_COST_DISPLAY=$(printf '$%.2f' "$SES_COST" 2>/dev/null || echo '$0.00')
-SES_DURATION_MS=${SES_DURATION_MS:-0}; SES_DURATION_MS=${SES_DURATION_MS%.*}
+
+
 
 # ── Cost tracking: monthly (API$) + weekly (USAGE) — delta computed once ────────
 # Both accumulate the same per-session delta; SES_LAST_FILE is updated after both.
@@ -250,7 +250,8 @@ if [ -f "$ACTIVITY_FILE" ]; then
     if [ -n "$ACTIVITY_JSON" ]; then
         read -r A_STATUS A_TOOL A_DETAIL A_TS <<< "$(echo "$ACTIVITY_JSON" | jq -r '[(.status // "unknown"), (.tool // ""), (.detail // ""), (.timestamp // 0)] | @tsv' 2>/dev/null || echo "unknown   0")"
         NOW=$(date +%s)
-        AGE=$((NOW - ${A_TS%.*}))
+        A_TS="${A_TS:-0}"; A_TS="${A_TS%.*}"
+        AGE=$((NOW - ${A_TS:-0}))
         if [ "$AGE" -lt 30 ]; then
             case "$A_STATUS" in
                 "running_tool")
@@ -527,7 +528,7 @@ elif [ "$PRECOMPACT_RUNNING" = false ] && [ "${PERCENT_REMAINING:-100}" -le 20 ]
     # Two-tier alert (per statusline_architecture.md):
     #   ≤20%: write sentinel (AI sees "wrap up" via PostToolUse hook) + visual banner
     #   ≤15%: full alert — sound, fireworks, Pushover (via watcher daemon)
-    # Uses PERCENT_REMAINING (overhead-aware), NOT CC_PERCENT_LEFT (Claude Code's raw %).
+    # Uses PERCENT_REMAINING (overhead-aware), NOT _CC_PERCENT_LEFT (Claude Code's raw %).
 
     # Sentinel file: written at ≤20% so PostToolUse hook injects "wrap up" into AI conversation
     if [ -n "$SESSION_ID" ]; then
@@ -599,16 +600,16 @@ flex_segments \
     "$BG_BLUE"      "$FG_BLUE"      ""    "${PERCENT}% used" \
     "$BG_CTX_LEFT"  "$FG_CTX_LEFT"  ""    "${PERCENT_REMAINING}% left"
 
-# Row 5.5: USAGE | WK XX% → API$ $X.XX  (stacks when narrow)
+# Row 4: USAGE | WK XX% → API$ $X.XX  (stacks when narrow)
 flex_segments \
     "$BG_USAGE" "$FG_USAGE" "USAGE" "$WEEKLY_COST_DISPLAY" \
     "$BG_MTHS"  "$FG_MTHS"  "API\$" "$MONTHLY_COST_DISPLAY"
 
-# Row 6: NAME (own line — only shown when session has a name)
+# Row 5: NAME (own line — only shown when session has a name)
 BG_NAME="\033[48;5;25m"; FG_NAME="\033[38;5;25m"
 [ -n "$SESSION_NAME" ] && print_row "$BG_NAME" "$FG_NAME" "NAME" "$SESSION_NAME"
 
-# Row 6.5: REPO (own line — always shown)
+# Row 6: REPO (own line — always shown)
 print_row "$BG_FOREST" "$FG_FOREST" "REPO" "$GITHUB_REPO_NAME"
 
 # Row 7: CLONE (own line)

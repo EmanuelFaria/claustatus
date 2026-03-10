@@ -515,12 +515,12 @@ if [ "$PRECOMPACT_READY" = true ]; then
         printf "\033[48;5;22m\033[92m\033[1m 🔔🔔  PASTE PRECOMPACT NOW  🔔🔔 \033[0m\n"
         printf "\033[42m\033[97m\033[1m 🔔🔔  PASTE PRECOMPACT NOW  🔔🔔 \033[0m\n"
     fi
-elif [ "$PRECOMPACT_RUNNING" = false ] && [ "${CC_PERCENT_LEFT:-100}" -le 18 ] 2>/dev/null && [ "${CC_PERCENT_LEFT:-100}" -gt 0 ] 2>/dev/null; then
-    # Two-tier alert:
-    #   ≤18%: write sentinel (AI sees "wrap up" via PostToolUse hook) + visual banner
+elif [ "$PRECOMPACT_RUNNING" = false ] && [ "${CC_PERCENT_LEFT:-100}" -le 20 ] 2>/dev/null && [ "${CC_PERCENT_LEFT:-100}" -gt 0 ] 2>/dev/null; then
+    # Two-tier alert (per statusline_architecture.md):
+    #   ≤20%: write sentinel (AI sees "wrap up" via PostToolUse hook) + visual banner
     #   ≤15%: full alert — sound, fireworks, Pushover (via watcher daemon)
 
-    # Sentinel file: written at ≤18% so PostToolUse hook injects "wrap up" into AI conversation
+    # Sentinel file: written at ≤20% so PostToolUse hook injects "wrap up" into AI conversation
     if [ -n "$SESSION_ID" ]; then
         SENTINEL_FILE="$HOME/.claude/temp/.precompact_needed_${SESSION_ID}"
         if [ ! -f "$SENTINEL_FILE" ] || [ $(( $(date +%s) - $(/usr/bin/stat -f %m "$SENTINEL_FILE" 2>/dev/null || echo 0) )) -gt 120 ]; then
@@ -550,7 +550,7 @@ elif [ "$PRECOMPACT_RUNNING" = false ] && [ "${CC_PERCENT_LEFT:-100}" -le 18 ] 2
             afplay /System/Library/Sounds/Sosumi.aiff 2>/dev/null &
         fi
     else
-        # 16-18%: soft visual warning — amber banner, no sound
+        # 16-20%: soft visual warning — amber banner, no sound
         if [ "$BLINK_STATE" -eq 0 ]; then
             printf "\033[43m\033[30m\033[1m ⚠️  CONTEXT LOW — WRAP UP  ⚠️ \033[0m\n"
         else

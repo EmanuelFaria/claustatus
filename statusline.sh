@@ -281,7 +281,7 @@ print_row() {
     local bg="$1" fg="$2" label="$3" content="$4"
     local label_width=$(( ${#label} + 2 ))   # label + spaces
     if [ "${#content}" -le "$MAX_ROW_CONTENT" ]; then
-        printf "${bg}${FG_WHITE}${BOLD} %s ${RESET}${bg}${FG_WHITE} %s ${RESET}${fg}${ARROW}${RESET}\n" \
+        printf "${bg}${FG_WHITE}${BOLD} %s ${RESET}${bg}${FG_WHITE}%s ${RESET}${fg}${ARROW}${RESET}\n" \
             "$label" "$content"
     else
         # Find last space at or before MAX_ROW_CONTENT
@@ -294,13 +294,10 @@ print_row() {
         local part1="${content:0:$break_at}"
         local part2="${content:$break_at}"
         part1="${part1%" "}"; part2="${part2# }"  # trim boundary spaces
-        # Pad label area on continuation line with spaces
-        local pad
-        pad=$(printf '%*s' "$label_width" '')
-        printf "${bg}${FG_WHITE}${BOLD} %s ${RESET}${bg}${FG_WHITE} %s ${RESET}${fg}${ARROW}${RESET}\n" \
+        printf "${bg}${FG_WHITE}${BOLD} %s ${RESET}${bg}${FG_WHITE}%s ${RESET}${fg}${ARROW}${RESET}\n" \
             "$label" "$part1"
-        printf "${bg}${FG_WHITE} %s ${RESET}${bg}${FG_WHITE} %s ${RESET}${fg}${ARROW}${RESET}\n" \
-            "$pad" "$part2"
+        printf "${bg}${FG_WHITE} %s ${RESET}${fg}${ARROW}${RESET}\n" \
+            "$part2"
     fi
 }
 
@@ -334,8 +331,12 @@ flex_segments() {
             local bg="${a[$((i*4))]}" fg="${a[$((i*4+1))]}"
             local lbl="${a[$((i*4+2))]}" con="${a[$((i*4+3))]}"
             (( i > 0 )) && printf "%b%b%b" "$bg" "$prev_fg" "$ARROW"
-            [[ -n "$lbl" ]] && printf "%b%b%b %s %b%b" "$bg" "$FG_WHITE" "$BOLD" "$lbl" "$RESET" "$bg"
-            printf "%b %s %b" "$FG_WHITE" "$con" "$RESET"
+            if [[ -n "$lbl" ]]; then
+                printf "%b%b%b %s %b%b" "$bg" "$FG_WHITE" "$BOLD" "$lbl" "$RESET" "$bg"
+                printf "%b%s %b" "$FG_WHITE" "$con" "$RESET"
+            else
+                printf "%b %s %b" "$FG_WHITE" "$con" "$RESET"
+            fi
             prev_fg="$fg"
         done
         printf "%b%b%b\n" "$prev_fg" "$ARROW" "$RESET"
@@ -474,7 +475,7 @@ if [ -f "$USAGE_CAPS_FILE" ]; then
         CAP_5H=$(json_num five_hour "$CAPJ")
         CAP_7D=$(json_num seven_day "$CAPJ")
         if [ "${CAP_5H:-0}" -gt 0 ] 2>/dev/null || [ "${CAP_7D:-0}" -gt 0 ] 2>/dev/null; then
-            CAP_TEXT="5h ${CAP_5H:-0}%  7d ${CAP_7D:-0}%"
+            CAP_TEXT="DY ${CAP_5H:-0}%  WK ${CAP_7D:-0}%"
             # Color by whichever window is more consumed
             CAP_MAX=$(( ${CAP_5H:-0} > ${CAP_7D:-0} ? ${CAP_5H:-0} : ${CAP_7D:-0} ))
             if [ "${CAP_MAX:-0}" -gt 75 ] 2>/dev/null; then
@@ -628,20 +629,18 @@ flex_segments \
     "$BG_BLUE"      "$FG_BLUE"      ""    "${PERCENT}% used" \
     "$BG_CTX_LEFT"  "$FG_CTX_LEFT"  ""    "${PERCENT_REMAINING}% left"
 
-# Row 4: USAGE | WK XX% → API$ $X.XX  (stacks when narrow)
-flex_segments \
-    "$BG_USAGE" "$FG_USAGE" "USAGE" "$WEEKLY_COST_DISPLAY" \
-    "$BG_MTHS"  "$FG_MTHS"  "API\$" "$MONTHLY_COST_DISPLAY"
-
-# Row 4.5: CAP — 5h/7d rolling usage caps (conditional — only when cache exists)
-[ "$CAP_TEXT" != "none" ] && print_row "$BG_CAP_R" "$FG_CAP_R" "CAP" "$CAP_TEXT"
+# Row 4: CAP | REPO  (CAP = rolling usage caps, REPO = git remote name)
+if [ "$CAP_TEXT" != "none" ]; then
+    flex_segments \
+        "$BG_CAP_R"   "$FG_CAP_R"   "CAP"  "$CAP_TEXT" \
+        "$BG_FOREST"  "$FG_FOREST"  "REPO" "$GITHUB_REPO_NAME"
+else
+    print_row "$BG_FOREST" "$FG_FOREST" "REPO" "$GITHUB_REPO_NAME"
+fi
 
 # Row 5: NAME (own line — only shown when session has a name)
 BG_NAME="\033[48;5;25m"; FG_NAME="\033[38;5;25m"
 [ -n "$SESSION_NAME" ] && print_row "$BG_NAME" "$FG_NAME" "NAME" "$SESSION_NAME"
-
-# Row 6: REPO (own line — always shown)
-print_row "$BG_FOREST" "$FG_FOREST" "REPO" "$GITHUB_REPO_NAME"
 
 # Row 7: CLONE (own line)
 # Row 8: ID (own line — UUID is long, splitting prevents truncation on narrow terminals)

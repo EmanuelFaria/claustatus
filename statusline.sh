@@ -476,11 +476,11 @@ PRECOMPACT_ALERTED_FILE="$HOME/.claude/temp/.precompact_alerted_${SESSION_ID}"
 PRECOMPACT_READY=false
 
 # Check if precompact output is ready to paste (5-min expiry)
-# Per-session file takes priority; fall back to global only if no session ID
+# Per-session file only — global file causes cross-session contamination
 _READY_FILE=""
 if [ -n "$SESSION_ID" ] && [ -f "$PRECOMPACT_READY_FILE_SESSION" ]; then
     _READY_FILE="$PRECOMPACT_READY_FILE_SESSION"
-elif [ -f "$PRECOMPACT_READY_FILE_GLOBAL" ]; then
+elif [ -z "$SESSION_ID" ] && [ -f "$PRECOMPACT_READY_FILE_GLOBAL" ]; then
     _READY_FILE="$PRECOMPACT_READY_FILE_GLOBAL"
 fi
 if [ -n "$_READY_FILE" ]; then
@@ -498,7 +498,7 @@ PRECOMPACT_RUNNING=false
 _RUN_FILE=""
 if [ -n "$SESSION_ID" ] && [ -f "$PRECOMPACT_RUNNING_FILE_SESSION" ]; then
     _RUN_FILE="$PRECOMPACT_RUNNING_FILE_SESSION"
-elif [ -f "$PRECOMPACT_RUNNING_FILE" ]; then
+elif [ -z "$SESSION_ID" ] && [ -f "$PRECOMPACT_RUNNING_FILE" ]; then
     _RUN_FILE="$PRECOMPACT_RUNNING_FILE"
 fi
 if [ -n "$_RUN_FILE" ]; then

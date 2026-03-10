@@ -460,27 +460,42 @@ PARENT_TTY="/dev/$(ps -o tty= -p $PPID 2>/dev/null | tr -d ' ')"
 # Priority: PASTE PRECOMPACT (flag exists) > PRECOMPACT NOW (≤15% remaining)
 # Animation: swap two rows on alternating seconds — creates visible flash effect
 # Per-session flags prevent multi-session cross-contamination
-PRECOMPACT_READY_FILE="$HOME/.claude/temp/.precompact_ready"
+PRECOMPACT_READY_FILE_GLOBAL="$HOME/.claude/temp/.precompact_ready"
+PRECOMPACT_READY_FILE_SESSION="$HOME/.claude/temp/.precompact_ready_${SESSION_ID}"
 PRECOMPACT_RUNNING_FILE="$HOME/.claude/temp/.precompact_running"
+PRECOMPACT_RUNNING_FILE_SESSION="$HOME/.claude/temp/.precompact_running_${SESSION_ID}"
 PRECOMPACT_ALERTED_FILE="$HOME/.claude/temp/.precompact_alerted_${SESSION_ID}"
 PRECOMPACT_READY=false
 
 # Check if precompact output is ready to paste (5-min expiry)
-if [ -f "$PRECOMPACT_READY_FILE" ]; then
-    READY_MTIME=$(/usr/bin/stat -f %m "$PRECOMPACT_READY_FILE" 2>/dev/null || echo 0)
+# Per-session file takes priority; fall back to global only if no session ID
+_READY_FILE=""
+if [ -n "$SESSION_ID" ] && [ -f "$PRECOMPACT_READY_FILE_SESSION" ]; then
+    _READY_FILE="$PRECOMPACT_READY_FILE_SESSION"
+elif [ -f "$PRECOMPACT_READY_FILE_GLOBAL" ]; then
+    _READY_FILE="$PRECOMPACT_READY_FILE_GLOBAL"
+fi
+if [ -n "$_READY_FILE" ]; then
+    READY_MTIME=$(/usr/bin/stat -f %m "$_READY_FILE" 2>/dev/null || echo 0)
     READY_AGE=$(( $(date +%s) - READY_MTIME ))
     if [ "$READY_AGE" -lt 300 ]; then
         PRECOMPACT_READY=true
     else
-        rm -f "$PRECOMPACT_READY_FILE"
+        rm -f "$_READY_FILE"
     fi
 fi
 
 # Check if precompact is currently running (suppress PRECOMPACT NOW while running)
 PRECOMPACT_RUNNING=false
-if [ -f "$PRECOMPACT_RUNNING_FILE" ]; then
-    RUN_AGE=$(( $(date +%s) - $(/usr/bin/stat -f %m "$PRECOMPACT_RUNNING_FILE" 2>/dev/null || echo 0) ))
-    [ "$RUN_AGE" -lt 120 ] && PRECOMPACT_RUNNING=true || rm -f "$PRECOMPACT_RUNNING_FILE"
+_RUN_FILE=""
+if [ -n "$SESSION_ID" ] && [ -f "$PRECOMPACT_RUNNING_FILE_SESSION" ]; then
+    _RUN_FILE="$PRECOMPACT_RUNNING_FILE_SESSION"
+elif [ -f "$PRECOMPACT_RUNNING_FILE" ]; then
+    _RUN_FILE="$PRECOMPACT_RUNNING_FILE"
+fi
+if [ -n "$_RUN_FILE" ]; then
+    RUN_AGE=$(( $(date +%s) - $(/usr/bin/stat -f %m "$_RUN_FILE" 2>/dev/null || echo 0) ))
+    [ "$RUN_AGE" -lt 120 ] && PRECOMPACT_RUNNING=true || rm -f "$_RUN_FILE"
 fi
 
 # Claude Code TUI strips \033[5m (blink) before rendering.

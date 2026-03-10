@@ -62,12 +62,21 @@ _applied: dict[str, dict[str, str]] = {}
 
 POLL_INTERVAL = 5
 MAX_SYNC_AGE = 86400
+LOG_MAX_BYTES = 512 * 1024  # 512KB — rotate when exceeded
+HEARTBEAT_INTERVAL = 300  # log heartbeat every 5 minutes
 
 
 def log(msg: str) -> None:
     """Log to file for debugging (viewable at ~/.claude/temp/.iterm_sync_script.log)."""
     try:
         ts = time.strftime("%H:%M:%S")
+        # Rotate if log exceeds max size
+        if os.path.exists(LOG_FILE) and os.path.getsize(LOG_FILE) > LOG_MAX_BYTES:
+            rotated = LOG_FILE + ".1"
+            try:
+                os.replace(LOG_FILE, rotated)
+            except Exception:
+                pass
         with open(LOG_FILE, "a") as f:
             f.write(f"[{ts}] {msg}\n")
     except Exception:
@@ -103,16 +112,6 @@ def build_iterm_index(all_sync: dict[str, dict]) -> dict[str, dict]:
             uuid_part = parts[1] if len(parts) == 2 else iterm_sid
             if uuid_part:
                 index[uuid_part] = sync_data
-    return index
-
-
-def build_repo_index(all_sync: dict[str, dict]) -> dict[str, dict]:
-    """Build repo_name -> sync_data mapping (fallback for sessions without iterm_session_id)."""
-    index = {}
-    for sync_data in all_sync.values():
-        repo = sync_data.get("repo_name", "")
-        if repo and repo != "--":
-            index[repo] = sync_data
     return index
 
 
@@ -157,17 +156,8 @@ async def setup_profile_badges(connection) -> None:
         log(f"Failed to query profiles: {e}")
 
 
-async def get_tab_title(session) -> str | None:
-    """Get the tab title for a session (set by OSC 1 to clone name)."""
-    try:
-        title = await session.async_get_variable("tab.title")
-        return str(title).strip() if title else None
-    except Exception:
-        return None
-
-
 async def find_claude_session(
-    session, iterm_index: dict[str, dict], _repo_index: dict[str, dict]
+    session, iterm_index: dict[str, dict]
 ) -> dict | None:
     """Match an iTerm2 session to Claude sync data.
 
@@ -280,13 +270,12 @@ async def main(connection):
     log("Initial scan of existing sessions...")
     all_sync = read_all_sync_files()
     iterm_index = build_iterm_index(all_sync)
-    repo_index = build_repo_index(all_sync)
-    log(f"  Found {len(all_sync)} sync files, {len(iterm_index)} with iterm_session_id, {len(repo_index)} unique repos")
+    log(f"  Found {len(all_sync)} sync files, {len(iterm_index)} with iterm_session_id")
 
     for window in app.windows:
         for tab in window.tabs:
             for session in tab.sessions:
-                sync_data = await find_claude_session(session, iterm_index, repo_index)
+                sync_data = await find_claude_session(session, iterm_index)
                 if sync_data:
                     await apply_session_data(session, sync_data, force=True)
                     await apply_titles(session, tab, window, sync_data)
@@ -304,13 +293,12 @@ async def main(connection):
 
         all_sync_now = read_all_sync_files()
         iterm_idx = build_iterm_index(all_sync_now)
-        repo_idx = build_repo_index(all_sync_now)
 
         for window in app.windows:
             for tab in window.tabs:
                 for session in tab.sessions:
                     if session.session_id == changed_iterm_sid:
-                        sync_data = await find_claude_session(session, iterm_idx, repo_idx)
+                        sync_data = await find_claude_session(session, iterm_idx)
                         if sync_data:
                             await apply_titles(session, tab, window, sync_data)
                             await apply_session_data(session, sync_data, force=True)
@@ -335,28 +323,54 @@ async def main(connection):
         identifier="all",
     )
 
-    # Phase 4: Periodic scanner
+    # Phase 4: Periodic scanner with crash resilience
+    consecutive_errors = 0
+    last_heartbeat = time.time()
+
     while True:
         await asyncio.sleep(POLL_INTERVAL)
         try:
+            # Heartbeat: log proof-of-life periodically
+            now = time.time()
+            if now - last_heartbeat >= HEARTBEAT_INTERVAL:
+                last_heartbeat = now
+                log(f"Heartbeat: alive, {len(_applied)} sessions tracked")
+
             all_sync = read_all_sync_files()
             if not all_sync:
+                consecutive_errors = 0
                 continue
 
             iterm_index = build_iterm_index(all_sync)
-            repo_index = build_repo_index(all_sync)
+
+            # Re-fetch app to detect stale connection
+            app = await iterm2.async_get_app(connection)
 
             for window in app.windows:
                 for tab in window.tabs:
                     for session in tab.sessions:
                         sync_data = await find_claude_session(
-                            session, iterm_index, repo_index
+                            session, iterm_index
                         )
                         if sync_data:
                             await apply_session_data(session, sync_data)
                             await apply_titles(session, tab, window, sync_data)
+
+            consecutive_errors = 0
+
+        except (iterm2.RPCException, ConnectionError, BrokenPipeError) as e:
+            # Connection to iTerm2 is dead — let run_forever reconnect
+            log(f"Connection lost: {e} — exiting main() for reconnect")
+            _applied.clear()
+            raise
+
         except Exception as e:
-            log(f"Poll error: {e}")
+            consecutive_errors += 1
+            log(f"Poll error ({consecutive_errors}): {e}")
+            if consecutive_errors >= 10:
+                log("Too many consecutive errors — exiting main() for reconnect")
+                _applied.clear()
+                raise
 
 
 iterm2.run_forever(main)

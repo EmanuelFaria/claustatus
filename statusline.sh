@@ -40,9 +40,6 @@ FG_ORANGE="\033[33m"
 ARROW=""
 
 # Base overhead - system prompts, CLAUDE.md, tools, hooks, etc.
-# Must match in all 3 locations:
-#   - ~/.claude/hooks/precompact_auto_warning.sh
-#   - ~/.claude/scripts/global_transcript_summary_extract_relay.py
 BASE_OVERHEAD=30500
 
 # ========== SINGLE JQ CALL — extract everything at once ==========
@@ -94,18 +91,10 @@ fi
 GITHUB_REPO_NAME="$REPO_NAME"
 if [ -n "$PROJECT_DIR" ]; then
     GLOBAL_GIT_CACHE="/tmp/statusline-git-${PROJECT_DIR//\//_}"
-    if [ -f "$GLOBAL_GIT_CACHE" ]; then
-        CACHE_AGE=$(( $(date +%s) - $(/usr/bin/stat -f %m "$GLOBAL_GIT_CACHE" 2>/dev/null || echo 0) ))
-        if [ "$CACHE_AGE" -lt 30 ]; then
-            GITHUB_REPO_NAME=$(cat "$GLOBAL_GIT_CACHE")
-        else
-            ORIGIN_URL=$(git -C "$PROJECT_DIR" remote get-url origin 2>/dev/null || echo "")
-            if [ -n "$ORIGIN_URL" ]; then
-                GITHUB_REPO_NAME="${ORIGIN_URL##*/}"
-                GITHUB_REPO_NAME="${GITHUB_REPO_NAME%.git}"
-            fi
-            echo "$GITHUB_REPO_NAME" > "$GLOBAL_GIT_CACHE" 2>/dev/null
-        fi
+    CACHE_AGE=999
+    [ -f "$GLOBAL_GIT_CACHE" ] && CACHE_AGE=$(( $(date +%s) - $(/usr/bin/stat -f %m "$GLOBAL_GIT_CACHE" 2>/dev/null || echo 0) ))
+    if [ "$CACHE_AGE" -lt 30 ]; then
+        GITHUB_REPO_NAME=$(cat "$GLOBAL_GIT_CACHE")
     else
         ORIGIN_URL=$(git -C "$PROJECT_DIR" remote get-url origin 2>/dev/null || echo "")
         if [ -n "$ORIGIN_URL" ]; then
@@ -173,9 +162,12 @@ if [ -n "$SESSION_ID" ]; then
         -v mf="$MONTHLY_COST_FILE" \
         -v wf="$WEEKLY_COST_FILE" \
     'BEGIN {
-        last = 0
-        if ((getline l < lf) > 0) last = l + 0; close(lf)
+        last = 0; had_last = 0
+        if ((getline l < lf) > 0) { last = l + 0; had_last = 1 }; close(lf)
         delta = cur - last; if (delta < 0) delta = 0
+        # Phantom delta guard: missing last file means entire session cost becomes
+        # a false delta on resume. Ignore large deltas when no last file existed.
+        if (!had_last && delta > 5) delta = 0
         mtotal = 0
         if ((getline t < mf) > 0) mtotal = t + 0; close(mf)
         mtotal += delta
@@ -508,22 +500,12 @@ if [ "$PRECOMPACT_READY" = true ]; then
         printf "\033[48;5;22m\033[92m\033[1m 🔔🔔  PASTE PRECOMPACT NOW  🔔🔔 \033[0m\n"
         printf "\033[42m\033[97m\033[1m 🔔🔔  PASTE PRECOMPACT NOW  🔔🔔 \033[0m\n"
     fi
-elif [ "$PRECOMPACT_RUNNING" = false ] && [ "${CC_PERCENT_LEFT:-100}" -le 15 ] 2>/dev/null && [ "${CC_PERCENT_LEFT:-100}" -gt 0 ] 2>/dev/null; then
-    # PRECOMPACT NOW — fires when Claude Code reports ≤15% remaining (authoritative source)
-    if [ "$BLINK_STATE" -eq 0 ]; then
-        printf "\033[41m\033[93m\033[1m 🚨🚨🚨  PRECOMPACT NOW!  🚨🚨🚨 \033[0m\n"
-        printf "\033[43m\033[31m\033[1m 🚨🚨🚨  PRECOMPACT NOW!  🚨🚨🚨 \033[0m\n"
-    else
-        printf "\033[43m\033[31m\033[1m 🚨🚨🚨  PRECOMPACT NOW!  🚨🚨🚨 \033[0m\n"
-        printf "\033[41m\033[93m\033[1m 🚨🚨🚨  PRECOMPACT NOW!  🚨🚨🚨 \033[0m\n"
-    fi
-    # One-shot urgent sound + fireworks: play only the first time threshold is crossed per session
-    if [ ! -f "$PRECOMPACT_ALERTED_FILE" ]; then
-        touch "$PRECOMPACT_ALERTED_FILE"
-        [ -c "$PARENT_TTY" ] && printf '\e]1337;RequestAttention=fireworks\a' > "$PARENT_TTY"
-        afplay /System/Library/Sounds/Sosumi.aiff 2>/dev/null &
-    fi
-    # Write sentinel file for PostToolUse hook to inject "pause ASAP" into conversation
+elif [ "$PRECOMPACT_RUNNING" = false ] && [ "${CC_PERCENT_LEFT:-100}" -le 18 ] 2>/dev/null && [ "${CC_PERCENT_LEFT:-100}" -gt 0 ] 2>/dev/null; then
+    # Two-tier alert:
+    #   ≤18%: write sentinel (AI sees "wrap up" via PostToolUse hook) + visual banner
+    #   ≤15%: full alert — sound, fireworks, Pushover (via watcher daemon)
+
+    # Sentinel file: written at ≤18% so PostToolUse hook injects "wrap up" into AI conversation
     if [ -n "$SESSION_ID" ]; then
         SENTINEL_FILE="$HOME/.claude/temp/.precompact_needed_${SESSION_ID}"
         if [ ! -f "$SENTINEL_FILE" ] || [ $(( $(date +%s) - $(/usr/bin/stat -f %m "$SENTINEL_FILE" 2>/dev/null || echo 0) )) -gt 120 ]; then
@@ -534,6 +516,30 @@ elif [ "$PRECOMPACT_RUNNING" = false ] && [ "${CC_PERCENT_LEFT:-100}" -le 15 ] 2
                 ITERM_WIN="window $(( _W_NUM + 1 ))" 2>/dev/null || true
             fi
             printf '%s' "${CC_PERCENT_LEFT}% context left in ${ITERM_WIN} (${SESSION_NAME:-${REPO_NAME:-session}})" > "$SENTINEL_FILE" 2>/dev/null
+        fi
+    fi
+
+    if [ "${CC_PERCENT_LEFT:-100}" -le 15 ] 2>/dev/null; then
+        # ≤15%: PRECOMPACT NOW — full alert with sound, fireworks, flashing banner
+        if [ "$BLINK_STATE" -eq 0 ]; then
+            printf "\033[41m\033[93m\033[1m 🚨🚨🚨  PRECOMPACT NOW!  🚨🚨🚨 \033[0m\n"
+            printf "\033[43m\033[31m\033[1m 🚨🚨🚨  PRECOMPACT NOW!  🚨🚨🚨 \033[0m\n"
+        else
+            printf "\033[43m\033[31m\033[1m 🚨🚨🚨  PRECOMPACT NOW!  🚨🚨🚨 \033[0m\n"
+            printf "\033[41m\033[93m\033[1m 🚨🚨🚨  PRECOMPACT NOW!  🚨🚨🚨 \033[0m\n"
+        fi
+        # One-shot urgent sound + fireworks
+        if [ ! -f "$PRECOMPACT_ALERTED_FILE" ]; then
+            touch "$PRECOMPACT_ALERTED_FILE"
+            [ -c "$PARENT_TTY" ] && printf '\e]1337;RequestAttention=fireworks\a' > "$PARENT_TTY"
+            afplay /System/Library/Sounds/Sosumi.aiff 2>/dev/null &
+        fi
+    else
+        # 16-18%: soft visual warning — amber banner, no sound
+        if [ "$BLINK_STATE" -eq 0 ]; then
+            printf "\033[43m\033[30m\033[1m ⚠️  CONTEXT LOW — WRAP UP  ⚠️ \033[0m\n"
+        else
+            printf "\033[48;5;136m\033[97m\033[1m ⚠️  CONTEXT LOW — WRAP UP  ⚠️ \033[0m\n"
         fi
     fi
 else
@@ -652,7 +658,7 @@ print_row "$BG_LEARN_R" "$FG_LEARN_R" "LEARN" "$LEARN_TEXT"
 # Claude Code's TUI captures stdout — OSC sequences must bypass it via /dev/ttyNNN
 # Tab title = clone dir name, Window title = session ID, Badge = session name
 {
-    PARENT_TTY="/dev/$(ps -o tty= -p $PPID 2>/dev/null | tr -d ' ')"
+    # PARENT_TTY already resolved at line 462
     if [ -c "$PARENT_TTY" ]; then
         [ -n "${SESSION_NAME:-}" ] && printf '\033]1337;SetBadgeFormat=%s\007' "$(printf '%s' "$SESSION_NAME" | base64 | tr -d '\n')" > "$PARENT_TTY"
         if [ -n "$SESSION_ID" ]; then

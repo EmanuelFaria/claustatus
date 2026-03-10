@@ -22,7 +22,15 @@ Claude Code API response
         │
         ├── API limits cache: ~/.claude/temp/.api_limits.json  (refreshed every 10 min)
         │
-        ├── Precompact flags: ~/.claude/temp/.precompact_{running,ready}
+        ├── Precompact flags (per-session to avoid cross-contamination):
+        │   ├── ~/.claude/temp/.precompact_ready_{SID}
+        │   ├── ~/.claude/temp/.precompact_running_{SID}
+        │   ├── ~/.claude/temp/.precompact_needed_{SID}  (sentinel for AI injection)
+        │   └── Global fallback only when SESSION_ID is empty
+        │
+        ├── Per-session data: ~/.claude/temp/statusline_data_{SID}.json
+        │   └── Overhead-aware percentages (used_percentage, remaining_percentage)
+        │       Raw CC% excludes BASE_OVERHEAD (30,500 tokens); data file includes it
         │
         └── printf: 11-15 powerline rows → stdout (Claude Code renders these)
                 │
@@ -47,14 +55,20 @@ iTerm2 (statusline_title_sync.py — runs every 5s)
 
 precompact_alert_watcher.py (LaunchAgent: com.personalos.precompact-alert-watcher — runs every 5s)
         │
-        ├── Reads: ~/.claude/temp/.precompact_{running,ready}  (alert state)
+        ├── Reads: ~/.claude/temp/statusline_data_{SID}.json   (overhead-aware context %)
+        ├── Reads: ~/.claude/temp/.precompact_ready_{SID}      (extraction complete flag)
         ├── Reads: ~/.claude/temp/.iterm_sync_{SID}.json       (tty + iterm_session_id)
+        │
+        ├── Thresholds (overhead-aware %):
+        │   ├── ≤15% → auto-run extraction + Pushover + macOS notification + tab flash
+        │   └── Hysteresis: once triggered, won't re-trigger until context rises >20%
+        │       (prevents infinite loop after /compact when context briefly stays low)
         │
         ├── On alert trigger:
         │   ├── macOS notification (osascript) — title=alert type, body="window N — session name"
         │   │   Window number extracted from iterm_session_id: w{N}t{M}p{L}:{UUID} → N+1
         │   ├── iTerm2 tab flash — writes ANSI red to tty for 2s, then reset
-        │   └── Dock bounce — osascript bounces iTerm2 dock icon
+        │   └── Pushover notification via ~/.claude/scripts/pushover.sh
         │
         └── 2-minute cooldown between repeat notifications per alert type
 ```

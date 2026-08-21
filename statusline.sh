@@ -46,8 +46,13 @@ BASE_OVERHEAD=30500
 # ========== SINGLE JQ CALL — extract everything at once ==========
 INPUT=$(cat)
 
-# Save JSON to temp file for other scripts to read (global + per-session)
-echo "$INPUT" > "$HOME/.claude/temp/statusline_data.json" 2>/dev/null &
+# Save JSON to the legacy global path atomically. Session-aware consumers use
+# the UUID-scoped document written after the effective token math below.
+{
+    _GLOBAL_STATUS_TMP="$HOME/.claude/temp/.statusline_data.json.tmp.$$"
+    printf '%s\n' "$INPUT" > "$_GLOBAL_STATUS_TMP" &&
+        mv -f "$_GLOBAL_STATUS_TMP" "$HOME/.claude/temp/statusline_data.json"
+} </dev/null >/dev/null 2>&1 &
 
 # One jq call extracts all fields, separated by Unit Separator (0x1F)
 # CRITICAL: Tab (\t) cannot be used — bash read treats consecutive tabs as one
@@ -132,14 +137,52 @@ if [ "$CONTEXT_SIZE" -gt 0 ] && [ "$TOTAL_TOKENS" -gt 0 ]; then
 else
     PERCENT=0
 fi
+if [ "$PERCENT" -gt 100 ] 2>/dev/null; then
+    PERCENT=100
+elif [ "$PERCENT" -lt 0 ] 2>/dev/null; then
+    PERCENT=0
+fi
 PERCENT_REMAINING=$((100 - PERCENT))
+TOKENS_REMAINING=$((CONTEXT_SIZE - TOTAL_TOKENS))
+[ "$TOKENS_REMAINING" -lt 0 ] 2>/dev/null && TOKENS_REMAINING=0
+if [ $((CONTEXT_SIZE % 1000000)) -eq 0 ] 2>/dev/null; then
+    CONTEXT_LIMIT_DISPLAY="$((CONTEXT_SIZE / 1000000))M"
+elif [ $((CONTEXT_SIZE % 1000)) -eq 0 ] 2>/dev/null; then
+    CONTEXT_LIMIT_DISPLAY="$((CONTEXT_SIZE / 1000))K"
+else
+    CONTEXT_LIMIT_DISPLAY=$(printf "%'d" "$CONTEXT_SIZE" 2>/dev/null || echo "$CONTEXT_SIZE")
+fi
 
-# Per-session data file: augment Claude Code's JSON with overhead-aware percentages.
-# The watcher daemon and hooks read this file — they need the computed values, not raw CC%.
+# Per-session data file: publish one atomic, model-aware snapshot. The shared
+# Claude/Codex continuity adapter reads the original current_usage fields; the
+# effective fields let other status consumers use the same overhead-aware math.
 if [[ -n "$SESSION_ID" ]]; then
-    echo "$INPUT" | jq -c --argjson pct_used "$PERCENT" --argjson pct_left "$PERCENT_REMAINING" \
-        '.context_window.used_percentage = $pct_used | .context_window.remaining_percentage = $pct_left' \
-        > "$HOME/.claude/temp/statusline_data_${SESSION_ID}.json" 2>/dev/null &
+    {
+        _SESSION_STATUS_TMP="$HOME/.claude/temp/.statusline_data_${SESSION_ID}.json.tmp.$$"
+        printf '%s\n' "$INPUT" | jq -c \
+            --argjson pct_used "$PERCENT" \
+            --argjson pct_left "$PERCENT_REMAINING" \
+            --argjson effective_used "$TOTAL_TOKENS" \
+            --argjson effective_left "$TOKENS_REMAINING" \
+            '.context_window.used_percentage = $pct_used
+             | .context_window.remaining_percentage = $pct_left
+             | .context_window.effective_input_tokens = $effective_used
+             | .context_window.effective_remaining_tokens = $effective_left' \
+            > "$_SESSION_STATUS_TMP" &&
+            mv -f "$_SESSION_STATUS_TMP" "$HOME/.claude/temp/statusline_data_${SESSION_ID}.json"
+    } </dev/null >/dev/null 2>&1 &
+
+    # Bind the terminal itself to this UUID. Manual precompact resolution uses
+    # this stable route and refuses global/current-session guesses.
+    _TERMINAL_SCOPE="${ITERM_SESSION_ID:-${TERM_SESSION_ID:-${TMUX_PANE:-${WEZTERM_PANE:-}}}}"
+    if [[ -n "$_TERMINAL_SCOPE" ]]; then
+        _TERMINAL_KEY=$(printf '%s' "$_TERMINAL_SCOPE" | /usr/bin/shasum -a 256 | awk '{print substr($1,1,24)}')
+        {
+            _TERMINAL_TMP="$HOME/.claude/temp/.session_for_terminal_${_TERMINAL_KEY}.tmp.$$"
+            printf '%s\n' "$SESSION_ID" > "$_TERMINAL_TMP" &&
+                mv -f "$_TERMINAL_TMP" "$HOME/.claude/temp/.session_for_terminal_${_TERMINAL_KEY}"
+        } </dev/null >/dev/null 2>&1 &
+    fi
 fi
 
 # Session tokens and cost (SES_COST is float — use printf, not arithmetic)
@@ -271,7 +314,13 @@ fi
 # ========== FAST JSON PARSER — no jq for route files ==========
 # Extract a JSON string value using bash builtins only (~0ms vs ~15ms per jq call)
 json_val() { local k="\"$1\""; local s="${2#*$k:}"; s="${s#*\"}"; echo "${s%%\"*}"; }
-json_num() { local k="\"$1\""; local s="${2#*$k:}"; echo "${s%%[!0-9]*}"; }
+json_num() {
+    local k="\"$1\"" s="$2"
+    [[ "$s" == *"$k"* ]] || return 0
+    s="${s#*$k}"; s="${s#*:}"
+    s="${s#"${s%%[![:space:]]*}"}"
+    echo "${s%%[!0-9]*}"
+}
 
 # ========== ROW PRINTER — wraps content at 42 chars (matches MODEL row width) ==========
 # Usage: print_row BG_VAR FG_VAR "LABEL" "content"
@@ -495,7 +544,7 @@ PARENT_TTY="/dev/$(ps -o tty= -p $PPID 2>/dev/null | tr -d ' ')"
 # ========== OUTPUT — all 12 rows, all printf ==========
 
 # Row 0: PRECOMPACT alerts (conditional, double-height)
-# Priority: PASTE PRECOMPACT (flag exists) > PRECOMPACT NOW (≤15% remaining)
+# Priority: PASTE PRECOMPACT (flag exists) > PRECOMPACT NOW (≤30K remaining)
 # Animation: swap two rows on alternating seconds — creates visible flash effect
 # Per-session flags prevent multi-session cross-contamination
 PRECOMPACT_READY_FILE_GLOBAL="$HOME/.claude/temp/.precompact_ready"
@@ -539,7 +588,12 @@ fi
 # Claude Code TUI strips \033[5m (blink) before rendering.
 # Workaround: swap the two rows on alternating seconds — each re-render flips the
 # color bands, creating a visible "flash" effect tied to the clock.
-BLINK_STATE=$(( $(date +%S) % 2 ))
+BLINK_SECOND="${POWERLINE_TEST_SECOND:-$(date +%S)}"
+case "$BLINK_SECOND" in
+    [0-5][0-9]) ;;
+    *) BLINK_SECOND="00" ;;
+esac
+BLINK_STATE=$(( 10#$BLINK_SECOND % 2 ))
 
 if [ "$PRECOMPACT_READY" = true ]; then
     # PASTE PRECOMPACT NOW — two rows, bright/dark green swap positions each render
@@ -553,13 +607,11 @@ if [ "$PRECOMPACT_READY" = true ]; then
         printf "\033[48;5;22m\033[92m\033[1m 🔔🔔  PASTE PRECOMPACT NOW  🔔🔔 \033[0m\n"
         printf "\033[42m\033[97m\033[1m 🔔🔔  PASTE PRECOMPACT NOW  🔔🔔 \033[0m\n"
     fi
-elif [ "$PRECOMPACT_RUNNING" = false ] && [ "${PERCENT_REMAINING:-100}" -le 20 ] 2>/dev/null && [ "${PERCENT_REMAINING:-100}" -gt 0 ] 2>/dev/null; then
-    # Two-tier alert (per statusline_architecture.md):
-    #   ≤20%: write sentinel (AI sees "wrap up" via PostToolUse hook) + visual banner
-    #   ≤15%: full alert — sound, fireworks, Pushover (via watcher daemon)
-    # Uses PERCENT_REMAINING (overhead-aware), NOT _CC_PERCENT_LEFT (Claude Code's raw %).
+elif [ "$PRECOMPACT_RUNNING" = false ] && [ "${TOKENS_REMAINING:-999999}" -le 40000 ] 2>/dev/null; then
+    # Fixed reserves preserve the original 200K-window runway while allowing
+    # native 1M sessions to use their larger context window.
 
-    # Sentinel file: written at ≤20% so PostToolUse hook injects "wrap up" into AI conversation
+    # Sentinel file: written at ≤40K for the shared continuity adapter.
     if [ -n "$SESSION_ID" ]; then
         SENTINEL_FILE="$HOME/.claude/temp/.precompact_needed_${SESSION_ID}"
         if [ ! -f "$SENTINEL_FILE" ] || [ $(( $(date +%s) - $(/usr/bin/stat -f %m "$SENTINEL_FILE" 2>/dev/null || echo 0) )) -gt 120 ]; then
@@ -573,8 +625,8 @@ elif [ "$PRECOMPACT_RUNNING" = false ] && [ "${PERCENT_REMAINING:-100}" -le 20 ]
         fi
     fi
 
-    if [ "${PERCENT_REMAINING:-100}" -le 15 ] 2>/dev/null; then
-        # ≤15%: PRECOMPACT NOW — full alert with sound, fireworks, flashing banner
+    if [ "${TOKENS_REMAINING:-999999}" -le 30000 ] 2>/dev/null; then
+        # ≤30K: PRECOMPACT NOW — full alert with sound and fireworks.
         if [ "$BLINK_STATE" -eq 0 ]; then
             printf "\033[41m\033[93m\033[1m 🚨🚨🚨  PRECOMPACT NOW!  🚨🚨🚨 \033[0m\n"
             printf "\033[43m\033[31m\033[1m 🚨🚨🚨  PRECOMPACT NOW!  🚨🚨🚨 \033[0m\n"
@@ -589,7 +641,7 @@ elif [ "$PRECOMPACT_RUNNING" = false ] && [ "${PERCENT_REMAINING:-100}" -le 20 ]
             afplay /System/Library/Sounds/Sosumi.aiff 2>/dev/null &
         fi
     else
-        # 16-20%: soft visual warning — amber banner, no sound
+        # 30K-40K: soft visual warning — amber banner, no sound.
         if [ "$BLINK_STATE" -eq 0 ]; then
             printf "\033[43m\033[30m\033[1m ⚠️  CONTEXT LOW — WRAP UP  ⚠️ \033[0m\n"
         else
@@ -597,8 +649,9 @@ elif [ "$PRECOMPACT_RUNNING" = false ] && [ "${PERCENT_REMAINING:-100}" -le 20 ]
         fi
     fi
 else
-    # Context is healthy — clear the alert sentinel so it re-fires if threshold crossed again
+    # Healthy context also clears a sentinel left by an older model/window.
     rm -f "$PRECOMPACT_ALERTED_FILE" 2>/dev/null
+    [ -n "${SESSION_ID:-}" ] && rm -f "$HOME/.claude/temp/.precompact_needed_${SESSION_ID}" 2>/dev/null
 fi
 
 # Row 1: Activity
@@ -610,22 +663,26 @@ flex_segments \
     "$BG_GRAY"   "$FG_GRAY"       ""      "v$CC_VERSION" \
     "$THINK_BG"  "$THINK_FG_NEXT" ""      "$THINK"
 
-# Row 2.5: AGENT — only shown when an agent/task is actively running
+# Row 2.5: AGENT — only for a current task in this exact session.
 AF="$HOME/.claude/temp/.agent_activity_${SESSION_ID}.json"
-[ -f "$AF" ] || AF="$HOME/.claude/temp/.agent_activity.json"
 if [ -f "$AF" ]; then
     AJ=$(<"$AF")
+    AGENT_STATUS=$(json_val status "$AJ")
     AGENT_DESC=$(json_val description "$AJ")
     AGENT_STARTED=$(json_num started "$AJ")
-    AGENT_ELAPSED=$(( $(date +%s) - ${AGENT_STARTED:-0} ))
-    AGENT_MINS=$((AGENT_ELAPSED / 60)); AGENT_SECS=$((AGENT_ELAPSED % 60))
-    [ "$AGENT_MINS" -gt 0 ] && AGENT_TIME="${AGENT_MINS}m ${AGENT_SECS}s" || AGENT_TIME="${AGENT_SECS}s"
-    print_row "\033[48;5;208m" "\033[38;5;208m" "AGENT" "${AGENT_DESC}  ${AGENT_TIME}"
+    if [ "$AGENT_STATUS" = "running" ] && [[ "$AGENT_STARTED" =~ ^[0-9]+$ ]]; then
+        AGENT_ELAPSED=$(( $(date +%s) - AGENT_STARTED ))
+        if [ "$AGENT_ELAPSED" -ge 0 ] 2>/dev/null && [ "$AGENT_ELAPSED" -le 43200 ] 2>/dev/null; then
+            AGENT_MINS=$((AGENT_ELAPSED / 60)); AGENT_SECS=$((AGENT_ELAPSED % 60))
+            [ "$AGENT_MINS" -gt 0 ] && AGENT_TIME="${AGENT_MINS}m ${AGENT_SECS}s" || AGENT_TIME="${AGENT_SECS}s"
+            print_row "\033[48;5;208m" "\033[38;5;208m" "AGENT" "${AGENT_DESC}  ${AGENT_TIME}"
+        fi
+    fi
 fi
 
 # Row 3: CTX  (stacks when narrow)
 flex_segments \
-    "$BG_YELLOW"    "$FG_YELLOW"    "CTX" "$TOKENS_DISPLAY" \
+    "$BG_YELLOW"    "$FG_YELLOW"    "CTX" "$TOKENS_DISPLAY / $CONTEXT_LIMIT_DISPLAY" \
     "$BG_BLUE"      "$FG_BLUE"      ""    "${PERCENT}% used" \
     "$BG_CTX_LEFT"  "$FG_CTX_LEFT"  ""    "${PERCENT_REMAINING}% left"
 
@@ -665,6 +722,18 @@ print_row "$BG_LEARN_R" "$FG_LEARN_R" "LEARN" "$LEARN_TEXT"
     "$BG_LIMITS_R" "$FG_LIMITS_R" "LIMITS" "$LIMITS_REQ_TEXT" \
     "$BG_LIMITS_R" "$FG_LIMITS_R" ""       "$LIMITS_TOK_TEXT"
 
+# A statusline refresh must not wait on a Keychain authorization dialog.
+bounded_keychain_password() {
+    local service="$1"
+    [ -x /opt/homebrew/bin/gtimeout ] || return 1
+    /opt/homebrew/bin/gtimeout -s TERM -k 1 3 \
+        /usr/bin/security find-generic-password -s "$service" -w 2>/dev/null
+}
+
+# Deterministic render tests and callers that only need stdout can suppress all
+# optional network, Keychain, and terminal-sync work.
+if [ "${POWERLINE_DISABLE_BACKGROUND:-0}" != "1" ]; then
+
 # ========== API LIMITS REFRESH (background, throttled to once per 10 min) ==========
 # Fetches anthropic-ratelimit-* headers from a cheap HEAD call to api.anthropic.com.
 # Uses ANTHROPIC_API_KEY from env, or macOS Keychain key "anthropic_api_key".
@@ -685,8 +754,8 @@ print_row "$BG_LEARN_R" "$FG_LEARN_R" "LEARN" "$LEARN_TEXT"
     # Resolve API key: env → Keychain "anthropic_api_key" → Keychain "ANTHROPIC_API_KEY"
     AKEY="${ANTHROPIC_API_KEY:-}"
     if [ -z "$AKEY" ]; then
-        AKEY=$(security find-generic-password -s "anthropic_api_key" -w 2>/dev/null || \
-               security find-generic-password -s "ANTHROPIC_API_KEY" -w 2>/dev/null || echo "")
+        AKEY=$(bounded_keychain_password "anthropic_api_key" || \
+               bounded_keychain_password "ANTHROPIC_API_KEY" || echo "")
     fi
     rm -f "$REFRESH_LOCK" 2>/dev/null
     [ -z "$AKEY" ] && exit 0
@@ -707,7 +776,7 @@ print_row "$BG_LEARN_R" "$FG_LEARN_R" "LEARN" "$LEARN_TEXT"
         "${RQ_LIM:-0}" "${RQ_REM:-0}" \
         "${RT_LIM:-0}" "${RT_REM:-0}" \
         "${RT_RST:-unknown}" > "$API_LIMITS_FILE" 2>/dev/null
-} &
+} </dev/null >/dev/null 2>&1 &
 
 # ========== USAGE CAPS REFRESH (background, throttled to once per 60 min) ==========
 # Fetches 5-hour and 7-day rolling usage cap percentages from /api/oauth/usage.
@@ -748,8 +817,8 @@ print_row "$BG_LEARN_R" "$FG_LEARN_R" "LEARN" "$LEARN_TEXT"
     if [ -z "$RESP" ] || echo "$RESP" | grep -q '"error"'; then
         AKEY="${ANTHROPIC_API_KEY:-}"
         if [ -z "$AKEY" ]; then
-            AKEY=$(security find-generic-password -s "anthropic_api_key" -w 2>/dev/null || \
-                   security find-generic-password -s "ANTHROPIC_API_KEY" -w 2>/dev/null || echo "")
+            AKEY=$(bounded_keychain_password "anthropic_api_key" || \
+                   bounded_keychain_password "ANTHROPIC_API_KEY" || echo "")
         fi
         if [ -n "$AKEY" ]; then
             RESP=$(curl -s -m 15 \
@@ -771,7 +840,7 @@ print_row "$BG_LEARN_R" "$FG_LEARN_R" "LEARN" "$LEARN_TEXT"
     [ -z "$FH" ] && exit 0
     printf '{"timestamp":%s,"five_hour":%s,"seven_day":%s}\n' \
         "$(date +%s)" "${FH:-0}" "${SD:-0}" > "$USAGE_CAPS_FILE" 2>/dev/null
-} &
+} </dev/null >/dev/null 2>&1 &
 
 # ========== ITERM2 SYNC (write directly to parent TTY, background) ==========
 # Claude Code's TUI captures stdout — OSC sequences must bypass it via /dev/ttyNNN
@@ -796,4 +865,6 @@ print_row "$BG_LEARN_R" "$FG_LEARN_R" "LEARN" "$LEARN_TEXT"
         printf '{"session_id":"%s","repo_name":"%s","session_name":"%s","resume_cmd":"%s","iterm_session_id":"%s","tty":"/dev/%s","timestamp":%s}\n' \
             "$SESSION_ID" "${REPO_NAME:-}" "${SESSION_NAME:-}" "${RESUME_CMD:-}" "${ITERM_SESSION_ID:-}" "${TTY_RAW:-null}" "$(date +%s)" > "$SYNC_FILE" 2>/dev/null
     fi
-} &
+} </dev/null >/dev/null 2>&1 &
+
+fi

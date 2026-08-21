@@ -95,13 +95,13 @@ Per-session flag files drive the precompact alerts (global fallback only when SE
 |------|-----------|---------|
 | `.precompact_running_{SID}` | Watcher daemon / PreCompact hook start | Extraction in progress — suppress PRECOMPACT NOW |
 | `.precompact_ready_{SID}` | Watcher daemon / PreCompact hook end | Output ready — show PASTE PRECOMPACT NOW |
-| `.precompact_needed_{SID}` | statusline.sh (≤20% remaining) | Sentinel for PostToolUse AI injection |
-| `.precompact_extracted_{SID}` | Watcher daemon / PreCompact hook | Hysteresis — prevents re-trigger until >20% |
-| `.precompact_alerted_{SID}` | statusline.sh (≤15% remaining) | One-shot sound/fireworks guard |
+| `.precompact_needed_{SID}` | statusline.sh (≤40K tokens remaining) | Sentinel for PostToolUse AI injection |
+| `.precompact_extracted_{SID}` | Watcher daemon / PreCompact hook | Hysteresis — prevents re-trigger until >40K tokens |
+| `.precompact_alerted_{SID}` | statusline.sh (≤30K tokens remaining) | One-shot sound/fireworks guard |
 
-**Two-tier alert system** (uses overhead-aware `PERCENT_REMAINING`, not Claude Code's raw `remaining_percentage`):
-- **≤20%:** Amber banner ("CONTEXT LOW — WRAP UP"), sentinel written for PostToolUse AI injection
-- **≤15%:** Red flashing banner ("PRECOMPACT NOW!"), one-shot Sosumi sound + iTerm2 fireworks
+**Two-tier alert system** (uses overhead-aware `effective_remaining_tokens` and the actual model window):
+- **≤40K tokens:** Amber banner ("CONTEXT LOW — WRAP UP"), sentinel written for PostToolUse AI injection
+- **≤30K tokens:** Red flashing banner ("PRECOMPACT NOW!"), one-shot Sosumi sound + iTerm2 fireworks
 
 **PRECOMPACT NOW** is suppressed while `.precompact_running_{SID}` exists and is <2 minutes old. The flag auto-expires so a crashed script can't suppress the alert forever.
 
@@ -109,7 +109,7 @@ Per-session flag files drive the precompact alerts (global fallback only when SE
 
 **Two-row alternating display:** Both alerts render as two rows that swap positions on alternating seconds (`$(date +%S) % 2`). This creates a visible flash without relying on ANSI blink, which Claude Code's TUI strips.
 
-**Hysteresis:** After compact/auto-compact, stale statusline data may still show ≤15%. The `.precompact_extracted_{SID}` marker prevents the watcher from re-triggering extraction. Cleared when context rises above 20%.
+**Hysteresis:** After compact/auto-compact, stale statusline data may still show ≤30K tokens. The `.precompact_extracted_{SID}` marker prevents the watcher from re-triggering extraction. It clears above 40K; a healthy render also removes an obsolete sentinel after a model/window change.
 
 To dismiss early:
 ```bash

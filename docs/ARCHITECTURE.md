@@ -29,7 +29,7 @@ Claude Code API response
         │   └── Global fallback only when SESSION_ID is empty
         │
         ├── Per-session data: ~/.claude/temp/statusline_data_{SID}.json
-        │   └── Overhead-aware percentages (used_percentage, remaining_percentage)
+        │   └── Actual model window plus overhead-aware percentages and token counts
         │       Raw CC% excludes BASE_OVERHEAD (30,500 tokens); data file includes it
         │
         └── printf: 11-15 powerline rows → stdout (Claude Code renders these)
@@ -59,9 +59,9 @@ precompact_alert_watcher.py (LaunchAgent: com.personalos.precompact-alert-watche
         ├── Reads: ~/.claude/temp/.precompact_ready_{SID}      (extraction complete flag)
         ├── Reads: ~/.claude/temp/.iterm_sync_{SID}.json       (tty + iterm_session_id)
         │
-        ├── Thresholds (overhead-aware %):
-        │   ├── ≤15% → auto-run extraction + Pushover + macOS notification + tab flash
-        │   └── Hysteresis: once triggered, won't re-trigger until context rises >20%
+        ├── Thresholds (overhead-aware absolute reserve):
+        │   ├── ≤30K tokens → auto-run extraction + Pushover + macOS notification + tab flash
+        │   └── Hysteresis: once triggered, won't re-trigger until context rises >40K
         │       (prevents infinite loop after /compact when context briefly stays low)
         │
         ├── On alert trigger:
